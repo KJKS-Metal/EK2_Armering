@@ -4,6 +4,8 @@ Forankrings- og omfaringslengder per NS-EN 1992-1-1:2004+A1:2014+NA:2024
 §8.4 (forankring), §8.7 (omfaring) og §8.9 (bunta armering).
 """
 
+# Merknader nyttar markering for senka skrift: φ_{n} (sjå ec2_material.til_latex)
+
 import math
 
 import ec2_material as mat
@@ -138,19 +140,19 @@ def beregn_detaljar(
     omfar_ok = phi_omfar is not None
     if phi_n > PHI_N_MAKS:
         forank_ok = omfar_ok = False
-        merknader.append(f"φn = {phi_n:.1f} mm > 55 mm – ikkje tillate, jf. (8.14).")
+        merknader.append(f"φ_{{n}} = {phi_n:.1f} mm > 55 mm – ikkje tillate, jf. (8.14).")
     if n == 4 and not trykk:
         forank_ok = False
-        merknader.append("n = 4 er berre tillate for vertikale stenger i trykk, jf. §8.9.1(2).")
+        merknader.append("n_{b} = 4 er berre tillate for vertikale stenger i trykk, jf. §8.9.1(2).")
     if n >= 4:
         merknader.append("Buntar med meir enn tre stenger skal ikkje omfarast, jf. §8.9.3(3).")
     if n > 1 and phi_n >= 32 and not forskyvd_forankring and not trykk:
         merknader.append(
-            f"φn = {phi_n:.1f} mm ≥ 32 mm: stengene i bunten bør forskyvast ved opplegg, jf. §8.9.2(1)."
+            f"φ_{{n}} = {phi_n:.1f} mm ≥ 32 mm: stengene i bunten bør forskyvast ved opplegg, jf. §8.9.2(1)."
         )
     if phi_n > PHI_LARGE_BUNT:
         merknader.append(
-            f"φn = {phi_n:.1f} mm > φlarge = 40 mm for buntar (NA.8.8(1)): tilleggsreglar i §8.8 gjeld."
+            f"φ_{{n}} = {phi_n:.1f} mm > φ_{{large}} = 40 mm for buntar (NA.8.8(1)): tilleggsreglar i §8.8 gjeld."
         )
 
     a = fri_avstand(s, phi, n)

@@ -9,6 +9,8 @@ Kjelder:
   Tabell 3.1  – fctm
 """
 
+import re
+
 ALPHA_CC = 0.85   # NA.3.1.6(1)P
 ALPHA_CT = 0.85   # NA.3.1.6(2)P
 FYK = 500.0       # B500NC [MPa]
@@ -53,3 +55,21 @@ def fcd(fck: float, gamma_c: float) -> float:
 
 def fyd(gamma_s: float) -> float:
     return FYK / gamma_s
+
+
+# ── Markering for heva/senka skrift ─────────────────────────
+# Tekst kan innehalde  x_{ab}  (senka) og  x^{2}  (heva).
+# PDF-rapporten teiknar dette direkte; i Streamlit vert det gjort om til LaTeX.
+_GRESK = {"α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "η": r"\eta", "λ": r"\lambda",
+          "ρ": r"\rho", "σ": r"\sigma", "φ": r"\phi", "Σ": r"\Sigma"}
+_RE_MARK = re.compile(r"(Σ?[A-Za-zα-ωΣ])([_^])\{([^{}]*)\}")
+
+
+def til_latex(tekst: str) -> str:
+    """φ_{n} → $\\phi_\\mathrm{n}$ osb. for visning i Streamlit."""
+    def _erst(m):
+        base = "".join(_GRESK.get(ch, ch) + (" " if ch == "Σ" else "") for ch in m.group(1))
+        idx = m.group(3)
+        idx = rf"\mathrm{{{idx}}}" if re.fullmatch(r"[A-Za-z][A-Za-z,.]+", idx) else idx
+        return f"${base}{m.group(2)}{{{idx}}}$"
+    return _RE_MARK.sub(_erst, tekst)

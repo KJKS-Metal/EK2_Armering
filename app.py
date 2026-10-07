@@ -22,6 +22,18 @@ matplotlib.use("Agg")  # headless backend for Streamlit
 
 STANDARD = "NS-EN 1992-1-1:2004+A1:2014+NA:2024"
 
+# Symbol med senka skrift (LaTeX – vert vist med KaTeX i Streamlit og mathtext i matplotlib)
+FCK, FCD, FCTM, FYD = r"$f_\mathrm{ck}$", r"$f_\mathrm{cd}$", r"$f_\mathrm{ctm}$", r"$f_\mathrm{yd}$"
+FCTK = r"$f_\mathrm{ctk,0.05}$"
+GC, GS = r"$\gamma_\mathrm{C}$", r"$\gamma_\mathrm{S}$"
+ACC, ACT = r"$\alpha_\mathrm{cc}$", r"$\alpha_\mathrm{ct}$"
+AB, PHIM = r"$a_\mathrm{b}$", r"$\phi_\mathrm{m,min}$"
+LBRQD, LBD, L0, LBMIN = r"$l_\mathrm{b,rqd}$", r"$l_\mathrm{bd}$", r"$l_0$", r"$l_\mathrm{b,min}$"
+SIGSD, SIGSMAX = r"$\sigma_\mathrm{sd}$", r"$\sigma_\mathrm{s,max}$"
+AST, ASTMIN, AS = r"$\Sigma A_\mathrm{st}$", r"$\Sigma A_\mathrm{st,min}$", r"$A_\mathrm{s}$"
+PHIN, C1, RHO1, ETA1 = r"$\phi_n$", r"$c_1$", r"$\rho_1$", r"$\eta_1$"
+A1, A2, A3, A4, A5, A6 = (rf"$\alpha_{i}$" for i in range(1, 7))
+
 # ──────────────────────────────────────────────────────────
 # Sideoppsett
 # ──────────────────────────────────────────────────────────
@@ -34,25 +46,26 @@ st.caption(f"{STANDARD} – bøyediameter, omfaring og forankring")
 g1, g2, g3 = st.columns([1.2, 1.2, 2])
 with g1:
     situasjon = st.selectbox(
-        "Dimensjonerande situasjon",
+        "Dimensjonerande situasjon (ULS)",
         list(mat.SITUASJONAR.keys()),
-        help="Tabell NA.2.1N: vedvarande/forbigåande γC = 1.50, γS = 1.15 · "
-             "ulykke (ALS) γC = 1.20, γS = 1.00.",
+        help=f"Bruddgrensetilstand. Tabell NA.2.1N: vedvarande/forbigåande {GC} = 1.50, {GS} = 1.15 · "
+             f"ulykke (ALS) {GC} = 1.20, {GS} = 1.00. Forankring og omfaring er ULS-kontrollar "
+             f"({SIGSD} og {FCTK}/{GC} i §8.4).",
     )
 with g2:
     tilstand = st.selectbox(
         "Spenningstilstand i armeringa",
         ["Strekk", "Trykk"],
-        help="Gjeld fana «Omfaring og forankring». Tabell 8.2: i trykk er α1 = α2 = α3 = 1.0 "
-             "og α5 er ikkje aktuell. lb,min etter (8.7). Bøyediameter vert alltid rekna for strekk.",
+        help=f"Gjeld fana «Omfaring og forankring». Tabell 8.2: i trykk er {A1} = {A2} = {A3} = 1.0 "
+             f"og {A5} er ikkje aktuell. {LBMIN} etter (8.7). Bøyediameter vert alltid rekna for strekk.",
     )
 gamma_c, gamma_s = mat.gamma(situasjon)
 fyd = mat.fyd(gamma_s)
 trykk = tilstand == "Trykk"
 with g3:
     st.markdown(
-        f"γC = **{gamma_c:.2f}** · γS = **{gamma_s:.2f}** · fyd = 500/{gamma_s:.2f} = **{fyd:.0f} MPa**  \n"
-        f"αcc = {mat.ALPHA_CC} (NA.3.1.6(1)P) · αct = {mat.ALPHA_CT} (NA.3.1.6(2)P)"
+        f"{GC} = **{gamma_c:.2f}** · {GS} = **{gamma_s:.2f}** · {FYD} = 500/{gamma_s:.2f} = **{fyd:.0f} MPa**  \n"
+        f"{ACC} = {mat.ALPHA_CC} (NA.3.1.6(1)P) · {ACT} = {mat.ALPHA_CT} (NA.3.1.6(2)P)"
     )
 if trykk:
     st.info("Trykk er valt. Kontroller òg §8.7.4.2 (tverrarmering ved omfaring i trykk) og "
@@ -73,9 +86,9 @@ def _punktliste(key: str, phi_sel, sig_max: float):
         st.session_state[key] = []
     ca, cb = st.columns(2)
     with ca:
-        p = st.selectbox("Stangdiameter φ [mm]", phi_sel, key=f"{key}_phi")
+        p = st.selectbox(r"Stangdiameter $\phi$ [mm]", phi_sel, key=f"{key}_phi")
     with cb:
-        s = st.number_input("Spenning σ [MPa]", min_value=0.0, max_value=float(sig_max),
+        s = st.number_input(r"Spenning $\sigma$ [MPa]", min_value=0.0, max_value=float(sig_max),
                             value=min(200.0, float(sig_max)), step=5.0, key=f"{key}_sig")
     if st.button("Legg til punkt", key=f"{key}_add"):
         st.session_state[key].append((p, float(s)))
@@ -129,22 +142,23 @@ tabell NA.8.1N og verdien frå uttrykk (8.1).
         st.subheader("Inndata")
 
         fck_b = st.selectbox(
-            "Betongfasthet fck [MPa]", mat.FCK_LISTE, index=mat.FCK_LISTE.index(45),
+            f"Betongfasthet {FCK} [MPa]", mat.FCK_LISTE, index=mat.FCK_LISTE.index(45),
             key="boye_fck",
-            help="fcd = αcc · fck / γC. §8.3(3): «Verdien av fcd velges ikke høyere enn "
+            help=f"{FCD} = {ACC} · {FCK} / {GC}. §8.3(3): «Verdien av fcd velges ikke høyere enn "
                  "verdien for fasthetsklasse C55/67.» Grunnen er at høgfast betong er "
                  "sprøare, og at (8.1) er ein modell for knusing/splitting av betongen "
                  "innanfor bøyen som ikkje er verifisert for høgare fastheiter.",
         )
         fcd, fck_brukt, avgrensa = ec2_boye.fcd_boey(fck_b, gamma_c)
-        st.markdown(f"fcd = {mat.ALPHA_CC} · {fck_brukt} / {gamma_c:.2f} = **{fcd:.2f} MPa**")
+        st.markdown(f"{FCD} = {mat.ALPHA_CC} · {fck_brukt} / {gamma_c:.2f} = **{fcd:.2f} MPa**")
         if avgrensa:
-            st.warning(f"fck = {fck_b} MPa er avgrensa til {mat.FCK_MAKS_BOEY} MPa (C55/67) "
+            st.warning(f"{FCK} = {fck_b} MPa er avgrensa til {mat.FCK_MAKS_BOEY} MPa (C55/67) "
                        "i uttrykk (8.1), jf. siste avsnitt i §8.3(3).")
 
         st.divider()
-        ab_modus = st.radio("Bestemming av a_b", ec2_boye.AB_MODUSAR, key="ab_modus")
-        with st.expander("ℹ️ Kvar kjem a_b frå?"):
+        ab_modus = st.radio(f"Bestemming av {AB}", ec2_boye.AB_MODUSAR, key="ab_modus",
+                            format_func=lambda x: x.replace("a_b = c + φ/2", r"$a_\mathrm{b} = c + \phi/2$"))
+        with st.expander("ℹ️ Kvar kjem $a_b$ frå?"):
             st.markdown(
                 "Definisjonen står rett under uttrykk (8.1) i **§8.3(3)** "
                 "(side 132 i NS-EN 1992-1-1):\n\n"
@@ -152,7 +166,7 @@ tabell NA.8.1N og verdien frå uttrykk (8.1).
                 "mellom stengene (eller armeringsbunt) vinkelrett på bøyens plan. For en stang "
                 "eller gruppe av stenger mot ytterkant av en konstruksjonsdel bør ab antas å "
                 "være overdekningen pluss φ/2.*\n\n"
-                "Altså: a_b er avstanden frå senter av stanga til nærmaste «frie» kant av den "
+                "Altså: $a_b$ er avstanden frå senter av stanga til nærmaste «frie» kant av den "
                 "betongskiva som tek opp trykket frå bøyen – anten halve avstanden til nabostanga "
                 "eller overdekninga til betongflata + φ/2."
             )
@@ -172,7 +186,7 @@ tabell NA.8.1N og verdien frå uttrykk (8.1).
             c_b = st.number_input("Overdekning c [mm]", min_value=5, max_value=200,
                                   value=50, step=5, key="c_boye")
             ab = ec2_boye.ab_map(ab_modus, c=c_b)
-        st.caption("a_b [mm]:  " + "  |  ".join(f"ø{p}: {ab[p]:.1f}" for p in ec2_boye.PHI_LIST))
+        st.caption(f"{AB} [mm]:  " + "  |  ".join(f"ø{p}: {ab[p]:.1f}" for p in ec2_boye.PHI_LIST))
 
         st.divider()
         st.markdown("**Eige punkt å markere i plottet**")
@@ -214,14 +228,14 @@ tabell NA.8.1N og verdien frå uttrykk (8.1).
                 ax.annotate(f"{d:.0f}", (sig_c, d), textcoords="offset points",
                             xytext=(0, 10), ha="center", fontsize=10, color="red")
             else:
-                st.info(f"φ{phi_c}, {sig_c:.0f} MPa: (8.1) gir {d:.1f} mm < {mn:.0f} mm frå "
+                st.info(f"ø{phi_c}, {sig_c:.0f} MPa: (8.1) gir {d:.1f} mm < {mn:.0f} mm frå "
                         f"tabell NA.8.1N.c) → tabellverdien {mn:.0f} mm er dimensjonerande.")
 
         ax.set_title(f"Naudsynt dordiameter etter uttrykk (8.1) – {situasjon}\n"
-                     f"fcd = {fcd:.2f} MPa  (kurva vist der (8.1) gir meir enn tabell NA.8.1N.c)",
+                     f"{FCD} = {fcd:.2f} MPa  (kurva vist der (8.1) gir meir enn tabell NA.8.1N.c)",
                      fontsize=11)
-        ax.set_xlabel("Strekkspenning σ [MPa]")
-        ax.set_ylabel("Naudsynt dordiameter φm,min [mm]")
+        ax.set_xlabel(r"Strekkspenning $\sigma$ [MPa]")
+        ax.set_ylabel(f"Naudsynt dordiameter {PHIM} [mm]")
         ax.set_ylim(0, 400)
         ax.set_xlim(0, sigma_max_b)
         ax.legend(loc="upper left", fontsize=9)
@@ -289,46 +303,46 @@ omfaringsskøyt, elles $n_b \le 3$.
 
     with col_inp2:
         st.subheader("Inndata")
-        fck = st.selectbox("Betongfasthet fck [MPa]", mat.FCK_LISTE,
+        fck = st.selectbox(f"Betongfasthet {FCK} [MPa]", mat.FCK_LISTE,
                            index=mat.FCK_LISTE.index(45), key="omfar_fck")
         fck_h = min(fck, mat.FCK_MAKS_HEFT)
-        st.caption(f"fctm = {mat.hent_fctm(fck_h):.1f} MPa (Tabell 3.1"
+        st.caption(f"{FCTM} = {mat.hent_fctm(fck_h):.1f} MPa (Tabell 3.1"
                    + (f", avgrensa til C60/75 jf. §8.4.2(2))" if fck > mat.FCK_MAKS_HEFT else ")"))
         if fck > mat.FCK_MAKS_HEFT:
-            st.warning("§8.4.2(2): fctk,0.05 er avgrensa til verdien for C60/75 på grunn av "
+            st.warning(f"§8.4.2(2): {FCTK} er avgrensa til verdien for C60/75 på grunn av "
                        "auka sprøheit i høgfast betong, med mindre auka heftfasthet kan påvisast.")
 
         eta_01 = st.selectbox(
-            "Heftforhold η₁", [1.0, 0.7],
+            f"Heftforhold {ETA1}", [1.0, 0.7],
             format_func=lambda x: "Gode (η₁ = 1.0)" if x == 1.0 else "Dårlege (η₁ = 0.7)",
             help="§8.4.2(2) og figur 8.2.",
         )
-        n = st.number_input("Antal stenger i bunt n", min_value=1, max_value=4, value=1, step=1)
+        n = st.number_input("Antal stenger i bunt $n$", min_value=1, max_value=4, value=1, step=1)
         forskyvd = False
         if n > 1 and not trykk:
             forskyvd = st.checkbox(
-                "Enkeltstenger i bunten forankra forskyvd ≥ 1.3·lb,rqd",
-                help="§8.9.2(2): då kan stangdiameteren φ brukast for lbd. Elles φn.",
+                f"Enkeltstenger i bunten forankra forskyvd ≥ 1.3·{LBRQD}",
+                help=f"§8.9.2(2): då kan stangdiameteren $\\phi$ brukast for {LBD}. Elles {PHIN}.",
             )
 
-        s = st.number_input("Senteravstand mellom stenger s [mm]", min_value=10,
+        s = st.number_input("Senteravstand mellom stenger $s$ [mm]", min_value=10,
                             max_value=1000, value=150, step=5)
         a_vis = {p: ec2_omfar.fri_avstand(s, p, n) for p in ec2_omfar.PHI_LIST}
-        st.text_input("Fri avstand a = s − " + ("φ" if n == 1 else "2φ") + " [mm]",
+        st.text_input("Fri avstand $a = s - " + ("\\phi" if n == 1 else "2\\phi") + "$ [mm]",
                       value="  |  ".join(f"ø{p}: {a_vis[p]:.0f}" for p in ec2_omfar.PHI_LIST),
                       disabled=True)
         cc1, cc2 = st.columns(2)
-        c = cc1.number_input("Overdekning c [mm]", min_value=5, max_value=200, value=65, step=5,
+        c = cc1.number_input("Overdekning $c$ [mm]", min_value=5, max_value=200, value=65, step=5,
                              help="Overdekning vinkelrett på flata stanga ligg mot (figur 8.3).")
-        c1 = cc2.number_input("Sideoverdekning c₁ [mm]", min_value=5, max_value=500, value=65,
+        c1 = cc2.number_input(f"Sideoverdekning {C1} [mm]", min_value=5, max_value=500, value=65,
                               step=5, help="Overdekning til sideflata (figur 8.3).")
 
         type_kobling = st.selectbox(
             "Koblingstype (figur 8.3)", ["a", "b", "c"],
             format_func=lambda x: f"{x} – {ec2_omfar.TYPE_TEKST[x]}",
         )
-        with st.expander("🖼️ Skisse av c, c₁ og a (figur 8.3)", expanded=True):
-            phi_fig = st.selectbox("Vis for φ [mm]", ec2_omfar.PHI_LIST, index=2, key="fig_phi")
+        with st.expander("🖼️ Skisse av $c$, $c_1$ og $a$ (figur 8.3)", expanded=True):
+            phi_fig = st.selectbox(r"Vis for $\phi$ [mm]", ec2_omfar.PHI_LIST, index=2, key="fig_phi")
             a_fig = ec2_omfar.fri_avstand(s, phi_fig, int(n))
             cd_fig = ec2_omfar.get_cd(type_kobling, a_fig, c, c1)
             f_cd = ec2_figur.figur_cd(type_kobling, c, c1, s, phi_fig, a_fig, cd_fig)
@@ -337,35 +351,35 @@ omfaringsskøyt, elles $n_b \le 3$.
 
         if not trykk:
             konstruksjon = st.selectbox(
-                "Konstruksjonsdel (ΣAst,min for forankring)", ["Bjelke", "Plate"],
-                help="Tabell 8.2: ΣAst,min = 0.25·As for bjelkar og 0 for plater. "
-                     "For omfaring vert ΣAst,min = As·σsd/fyd brukt, jf. §8.7.3(1).",
+                f"Konstruksjonsdel ({ASTMIN} for forankring)", ["Bjelke", "Plate"],
+                help=f"Tabell 8.2: {ASTMIN} = 0.25·{AS} for bjelkar og 0 for plater. "
+                     f"For omfaring vert {ASTMIN} = {AS}·{SIGSD}/{FYD} brukt, jf. §8.7.3(1).",
             )
             sum_ast = st.number_input(
-                "Tverrarmering langs lbd/l0, ΣAst [mm²]", min_value=0.0, max_value=10000.0,
+                f"Tverrarmering langs {LBD}/{L0}, {AST} [mm²]", min_value=0.0, max_value=10000.0,
                 value=0.0, step=50.0,
                 help="Tverrsnittsareal av tverrarmering (ikkje sveist) langs lengda. "
-                     "0 gir α3 = 1.0 (konservativt).",
+                     f"0 gir {A3} = 1.0 (konservativt).",
             )
             stangplassering = st.selectbox(
                 "Plassering av stang (K, figur 8.4)", list(ec2_omfar.K_MAP.keys()), index=1,
                 help="Utanfor tverrarm.: K = 0 · Innanfor: K = 0.05 · I bøyen: K = 0.1",
             )
-            rho = st.number_input("Trykk i tverretning p [MPa]", min_value=0.0, max_value=100.0,
-                                  value=0.0, step=1.0, help="α5 = 1 − 0.04p, 0.7 ≤ α5 ≤ 1.0")
+            rho = st.number_input("Trykk i tverretning $p$ [MPa]", min_value=0.0, max_value=100.0,
+                                  value=0.0, step=1.0, help=f"{A5} = 1 − 0.04p, 0.7 ≤ {A5} ≤ 1.0")
         else:
             konstruksjon, sum_ast, stangplassering, rho = "Bjelke", 0.0, "Utanfor", 0.0
 
-        rho_1 = st.number_input("Prosentdel omfarte stenger ρ₁ [%]", min_value=0.0,
+        rho_1 = st.number_input(f"Prosentdel omfarte stenger {RHO1} [%]", min_value=0.0,
                                 max_value=100.0, value=50.0, step=5.0,
-                                help="α6 = (ρ1/25)^0.5, 1.0 ≤ α6 ≤ 1.5 (Tabell 8.3)")
-        sveist = st.checkbox("Sveist tverrarmering (α₄ = 0.7)", value=False,
+                                help=f"{A6} = ({RHO1}/25)^0.5, 1.0 ≤ {A6} ≤ 1.5 (Tabell 8.3)")
+        sveist = st.checkbox(f"Sveist tverrarmering ({A4} = 0.7)", value=False,
                              help="Tabell 8.2 og §8.6. Gjeld berre forankring.")
         sigma_s_max = st.number_input(
-            "Maks. armeringsspenning i plott σs,max [MPa]", min_value=100, max_value=600,
+            f"Maks. armeringsspenning i plott {SIGSMAX} [MPa]", min_value=100, max_value=600,
             value=500, step=25,
-            help="Vert brukt for å vurdere ulykkessituasjon (ALS). Merk at σsd ikkje kan "
-                 "overstige fyd for valt situasjon.",
+            help=f"Vert brukt for å vurdere ulykkessituasjon (ALS). Merk at {SIGSD} ikkje kan "
+                 f"overstige {FYD} for valt situasjon.",
         )
         st.divider()
         st.markdown("**Eige punkt å markere i plottet**")
@@ -383,16 +397,16 @@ omfaringsskøyt, elles $n_b \le 3$.
         sig_arr = kurvar["sigma_sd"]
         type_tekst = ec2_omfar.get_type_kobling_tekst(type_kobling)
         param_text = (
-            f"{tilstand}, {situasjon}  |  fck = {fck} MPa, η₁ = {eta_01}, n = {n}, s = {s} mm, "
-            f"c = {c} mm, c₁ = {c1} mm, {type_tekst}, ρ₁ = {rho_1:.0f} %"
+            f"{tilstand}, {situasjon}  |  {FCK} = {fck} MPa, {ETA1} = {eta_01}, n = {n}, s = {s} mm, "
+            f"c = {c} mm, {C1} = {c1} mm, {type_tekst}, {RHO1} = {rho_1:.0f} %"
         )
 
         fig2, (ax_l0, ax_lbd) = plt.subplots(1, 2, figsize=(14, 6))
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
         for idx, phi in enumerate(ec2_omfar.PHI_LIST):
             clr = colors[idx % len(colors)]
-            ax_l0.plot(sig_arr, kurvar["l0"][phi], label=f"l0, ø{phi}", color=clr)
-            ax_lbd.plot(sig_arr, kurvar["lbd"][phi], label=f"lbd, ø{phi}", color=clr)
+            ax_l0.plot(sig_arr, kurvar["l0"][phi], label=f"{L0}, ø{phi}", color=clr)
+            ax_lbd.plot(sig_arr, kurvar["lbd"][phi], label=f"{LBD}, ø{phi}", color=clr)
 
         for phi_c, sig_c in st.session_state.get("omfar_custom", []):
             l0_c, lbd_c = ec2_omfar.beregn_omfarOgForankring(phi=phi_c, sigma_sd=sig_c, **felles)
@@ -404,14 +418,14 @@ omfaringsskøyt, elles $n_b \le 3$.
                 ax_.annotate(f"{v:.0f}", (sig_c, v), textcoords="offset points",
                              xytext=(0, 10), ha="center", fontsize=10, color="red")
 
-        l0_tittel = "Naudsynt omfaringslengde l0 (avrunda opp til 100 mm)"
+        l0_tittel = f"Naudsynt omfaringslengde {L0} (avrunda opp til 100 mm)"
         if n > 1:
             l0_tittel += "\nbunt: sjå §8.9.3 for diameter og forskyving"
-        for ax_, title in ((ax_l0, l0_tittel), (ax_lbd, "Naudsynt forankringslengde lbd")):
+        for ax_, title in ((ax_l0, l0_tittel), (ax_lbd, f"Naudsynt forankringslengde {LBD}")):
             ax_.axvline(fyd, color="grey", ls="--", lw=1)
-            ax_.text(fyd, 0.98, f" fyd = {fyd:.0f}", transform=ax_.get_xaxis_transform(),
+            ax_.text(fyd, 0.98, f" {FYD} = {fyd:.0f}", transform=ax_.get_xaxis_transform(),
                      va="top", fontsize=8, color="grey")
-            ax_.set_xlabel("Armeringsspenning σsd [MPa]")
+            ax_.set_xlabel(f"Armeringsspenning {SIGSD} [MPa]")
             ax_.set_ylabel("Lengde [mm]")
             ax_.set_title(title, fontsize=11)
             ax_.set_xlim(0, sigma_s_max)
@@ -423,32 +437,32 @@ omfaringsskøyt, elles $n_b \le 3$.
         st.pyplot(fig2)
 
         if sigma_s_max > fyd:
-            st.caption(f"Kurvene over fyd = {fyd:.0f} MPa (stipla line) er berre informative for "
-                       f"valt situasjon. For ALS: vel «Ulykke (ALS)» øvst (fyd = 500 MPa, γC = 1.20).")
+            st.caption(f"Kurvene over {FYD} = {fyd:.0f} MPa (stipla line) er berre informative for "
+                       f"valt situasjon. For ALS: vel «Ulykke (ALS)» øvst ({FYD} = 500 MPa, {GC} = 1.20).")
 
 
         d_fig = ec2_omfar.beregn_detaljar(phi=phi_fig, sigma_sd=fyd, **felles)
         merk = []
         for p in ec2_omfar.PHI_LIST:
             for m in ec2_omfar.beregn_detaljar(phi=p, sigma_sd=fyd, **felles)["merknader"]:
-                merk.append(f"ø{p}: {m}")
+                merk.append(f"ø{p}: {mat.til_latex(m)}")
         if merk:
             st.warning("**Merknader**  \n" + "  \n".join(f"• {m}" for m in merk))
         if n > 1:
             phi_n_fig = d_fig["phi_n"]
             if d_fig["omfar_forskyving"]:
                 st.info(
-                    f"**Omfaring av bunt (§8.9.3(3))** – ø{phi_fig}, n = {n}, φn = {phi_n_fig:.1f} mm:  \n"
-                    f"Enkeltstengene skal forskyvast minst 1.3·l0, der l0 er rekna for éi stang "
-                    f"(φ = {phi_fig} mm). Ein ekstra (fjerde) omfaringsstang vert brukt, jf. figur 8.13. "
+                    f"**Omfaring av bunt (§8.9.3(3))** – ø{phi_fig}, n = {n}, {PHIN} = {phi_n_fig:.1f} mm:  \n"
+                    f"Enkeltstengene skal forskyvast minst 1.3·{L0}, der {L0} er rekna for éi stang "
+                    f"($\\phi$ = {phi_fig} mm). Ein ekstra (fjerde) omfaringsstang vert brukt, jf. figur 8.13. "
                     f"Maks fire stenger i eitt snitt.  \n"
-                    f"l0 (éi stang) = {d_fig['l0_rund']} mm → forskyving ≥ 1.3·l0 = "
-                    f"{d_fig['forskyving']:.0f} mm, total skøytsone ≈ {n + 1}·1.3·l0 = "
+                    f"{L0} (éi stang) = {d_fig['l0_rund']} mm → forskyving ≥ 1.3·{L0} = "
+                    f"{d_fig['forskyving']:.0f} mm, total skøytsone ≈ {n + 1}·1.3·{L0} = "
                     f"{(n + 1) * d_fig['forskyving']:.0f} mm."
                 )
             elif n == 2 and d_fig["omfar"] is not None:
-                st.info(f"**Omfaring av bunt (§8.9.3(2))** – n = 2 og φn = {phi_n_fig:.1f} mm < 32 mm: "
-                        f"stengene kan skøytast utan forskyving, l0 vert rekna med φn.")
+                st.info(f"**Omfaring av bunt (§8.9.3(2))** – n = 2 og {PHIN} = {phi_n_fig:.1f} mm < 32 mm: "
+                        f"stengene kan skøytast utan forskyving, {L0} vert rekna med {PHIN}.")
 
 
         rapport2 = ec2_rapport.lag_rapport_omfar(

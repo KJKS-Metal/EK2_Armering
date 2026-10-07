@@ -47,16 +47,24 @@ def figur_cd(type_kobling: str, c: float, c1: float, s: float, phi: float,
                                     boxstyle=f"round,pad=0,rounding_size={r}",
                                     fill=False, ec="#a00000", ls="--", lw=1))
 
-    # Mål
+    # Mål med hjelpeliner (forlenging frå stang/kant til målelina)
+    hl = dict(color="#4f6378", lw=0.9, zorder=3)
+    ov = 6  # overheng forbi målelina [mm]
     if type_kobling in ("a", "c"):
-        _maal(ax, (x1 - 1.6 * r - 8, 0), (x1 - 1.6 * r - 8, y1 - r), f"c = {c:.0f}",
-              offset=(-22, 0))
+        xd = x1 - 1.6 * r - 8
+        ax.plot([xd - ov, x1], [y1 - r, y1 - r], **hl)            # horisontal frå underkant stang
+        _maal(ax, (xd, 0), (xd, y1 - r), f"$c$ = {c:.0f}", offset=(-22, 0))
     if type_kobling in ("a", "b"):
         ym = y1 + (3 * phi + 15 if type_kobling == "b" else 2.2 * r + 10)
-        _maal(ax, (0, ym), (x1 - r, ym), f"c₁ = {c1:.0f}", offset=(0, 10))
-        _maal(ax, (x1 + r, ym), (x2 - r, ym), f"a = {a:.0f}", offset=(0, 10))
+        y0 = y1 + (3 * phi if type_kobling == "b" else 0)
+        for xv in (x1 - r, x1 + r, x2 - r):                         # vertikale frå stangkantane
+            ax.plot([xv, xv], [y0, ym + ov], **hl)
+        _maal(ax, (0, ym), (x1 - r, ym), f"$c_1$ = {c1:.0f}", offset=(0, 10))
+        _maal(ax, (x1 + r, ym), (x2 - r, ym), f"$a$ = {a:.0f}", offset=(0, 10))
 
-    formel = {"a": "cd = min(a/2, c₁, c)", "b": "cd = min(a/2, c₁)", "c": "cd = c"}[type_kobling]
+    formel = {"a": r"$c_\mathrm{d} = \min(a/2,\ c_1,\ c)$",
+              "b": r"$c_\mathrm{d} = \min(a/2,\ c_1)$",
+              "c": r"$c_\mathrm{d} = c$"}[type_kobling]
     ax.set_title(f"{formel} = {cd:.1f} mm", fontsize=10)
     ax.set_xlim(-45, W + 5)
     ax.set_ylim(-10, H + 5)
