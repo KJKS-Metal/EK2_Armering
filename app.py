@@ -46,11 +46,11 @@ st.caption(f"{STANDARD} – bøyediameter, omfaring og forankring")
 g1, g2, g3 = st.columns([1.2, 1.2, 2])
 with g1:
     situasjon = st.selectbox(
-        "Dimensjonerande situasjon (ULS)",
+        "Dimensjonerande situasjon",
         list(mat.SITUASJONAR.keys()),
-        help=f"Bruddgrensetilstand. Tabell NA.2.1N: vedvarande/forbigåande {GC} = 1.50, {GS} = 1.15 · "
-             f"ulykke (ALS) {GC} = 1.20, {GS} = 1.00. Forankring og omfaring er ULS-kontrollar "
-             f"({SIGSD} og {FCTK}/{GC} i §8.4).",
+        help=f"Tabell NA.2.1N: ULS (vedvarande/forbigåande) {GC} = 1.50, {GS} = 1.15 · "
+             f"ALS (ulykke) {GC} = 1.20, {GS} = 1.00. Forankring og omfaring vert ikkje kontrollert "
+             f"i SLS ({SIGSD} og {FCTK}/{GC} i §8.4 er dimensjonerande verdiar).",
     )
 with g2:
     tilstand = st.selectbox(
@@ -438,7 +438,7 @@ omfaringsskøyt, elles $n_b \le 3$.
 
         if sigma_s_max > fyd:
             st.caption(f"Kurvene over {FYD} = {fyd:.0f} MPa (stipla line) er berre informative for "
-                       f"valt situasjon. For ALS: vel «Ulykke (ALS)» øvst ({FYD} = 500 MPa, {GC} = 1.20).")
+                       f"valt situasjon. For ALS: vel «ALS – Ulykkessituasjon» øvst ({FYD} = 500 MPa, {GC} = 1.20).")
 
 
         d_fig = ec2_omfar.beregn_detaljar(phi=phi_fig, sigma_sd=fyd, **felles)

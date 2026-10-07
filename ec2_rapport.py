@@ -212,7 +212,7 @@ def lag_rapport_boye(fck, fcd, fck_brukt, avgrensa, situasjon, gamma_c, gamma_s,
     ab_modus_md = ab_modus.replace("a_b", "a_{b}")
     _seksjon(pdf, "Inndata og materialparametrar", gap=0)
     rader = [
-        ("Dimensjonerande situasjon, ULS (tabell NA.2.1N)", situasjon),
+        ("Dimensjonerande situasjon (tabell NA.2.1N)", situasjon),
         ("Materialfaktor betong γ_{C}", f"{gamma_c:.2f}"),
         ("Materialfaktor armering γ_{S}", f"{gamma_s:.2f}"),
         ("α_{cc} (NA.3.1.6(1)P)", f"{mat.ALPHA_CC}"),
@@ -319,7 +319,7 @@ def lag_rapport_omfar(felles: dict, situasjon: str, tilstand: str, sigma_s_max: 
     _seksjon(pdf, "Inndata", gap=0)
     fyd = mat.fyd(f["gamma_s"])
     inndata = [
-        ("Dimensjonerande situasjon, ULS (tabell NA.2.1N)",
+        ("Dimensjonerande situasjon (tabell NA.2.1N)",
          f"{situasjon}: γ_{{C}} = {f['gamma_c']:.2f}, γ_{{S}} = {f['gamma_s']:.2f}"),
         ("Spenningstilstand", tilstand),
         ("Betongfasthet f_{ck}", f"{f['fck']} MPa"),

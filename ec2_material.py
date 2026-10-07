@@ -17,8 +17,8 @@ FYK = 500.0       # B500NC [MPa]
 
 # Tabell NA.2.1N – materialfaktorar i bruddgrensetilstand
 SITUASJONAR = {
-    "Vedvarande/forbigåande": {"gamma_c": 1.50, "gamma_s": 1.15},
-    "Ulykke (ALS)":           {"gamma_c": 1.20, "gamma_s": 1.00},
+    "ULS – Bruddgrensetilstand": {"gamma_c": 1.50, "gamma_s": 1.15},
+    "ALS – Ulykkessituasjon":    {"gamma_c": 1.20, "gamma_s": 1.00},
 }
 
 # Tabell 3.1 NS-EN 1992-1-1 – middelverdi for aksial strekkfasthet fctm [MPa]
