@@ -1,470 +1,465 @@
 """
 app.py  –  EC2 Armering Verktøy
 Streamlit-applikasjon for bøyediameter, omfarings- og forankringslengder
-per NS-EN 1992-1-1 (Eurokode 2).
+per NS-EN 1992-1-1:2004+A1:2014+NA:2024 (Eurokode 2).
 
 Køyr med:  streamlit run app.py
 """
 
 import io
-import math
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import streamlit as st
 
+import ec2_material as mat
 import ec2_boye
 import ec2_omfar
+import ec2_figur
 import ec2_rapport
 
 matplotlib.use("Agg")  # headless backend for Streamlit
 
+STANDARD = "NS-EN 1992-1-1:2004+A1:2014+NA:2024"
+
 # ──────────────────────────────────────────────────────────
 # Sideoppsett
 # ──────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="EC2 Armering Verktøy",
-    page_icon="🔩",
-    layout="wide",
-)
+st.set_page_config(page_title="EC2 Armering Verktøy", page_icon="🔩", layout="wide")
 
 st.title("EC2 Armering Verktøy")
-st.caption("NS-EN 1992-1-1 (Eurokode 2) – bøyediameter, omfaring og forankring")
+st.caption(f"{STANDARD} – bøyediameter, omfaring og forankring")
+
+# ── Globale val ──────────────────────────────────────────
+g1, g2, g3 = st.columns([1.2, 1.2, 2])
+with g1:
+    situasjon = st.selectbox(
+        "Dimensjonerande situasjon",
+        list(mat.SITUASJONAR.keys()),
+        help="Tabell NA.2.1N: vedvarande/forbigåande γC = 1.50, γS = 1.15 · "
+             "ulykke (ALS) γC = 1.20, γS = 1.00.",
+    )
+with g2:
+    tilstand = st.selectbox(
+        "Spenningstilstand i armeringa",
+        ["Strekk", "Trykk"],
+        help="Gjeld fana «Omfaring og forankring». Tabell 8.2: i trykk er α1 = α2 = α3 = 1.0 "
+             "og α5 er ikkje aktuell. lb,min etter (8.7). Bøyediameter vert alltid rekna for strekk.",
+    )
+gamma_c, gamma_s = mat.gamma(situasjon)
+fyd = mat.fyd(gamma_s)
+trykk = tilstand == "Trykk"
+with g3:
+    st.markdown(
+        f"γC = **{gamma_c:.2f}** · γS = **{gamma_s:.2f}** · fyd = 500/{gamma_s:.2f} = **{fyd:.0f} MPa**  \n"
+        f"αcc = {mat.ALPHA_CC} (NA.3.1.6(1)P) · αct = {mat.ALPHA_CT} (NA.3.1.6(2)P)"
+    )
+if trykk:
+    st.info("Trykk er valt. Kontroller òg §8.7.4.2 (tverrarmering ved omfaring i trykk) og "
+            "§8.4.1(3): vinkelkroker og kroker bidreg ikkje til forankring av trykkarmering.")
 
 tab1, tab2 = st.tabs(["🔄 Bøyediameter", "📏 Omfaring og forankring"])
 
 
-# ══════════════════════════════════════════════════════════
-# Hjelpe-funksjonar
-# ══════════════════════════════════════════════════════════
-
-def _fig_to_png_bytes(fig, dpi: int = 300) -> bytes:
+def _fig_to_bytes(fig, fmt: str, dpi: int = 300) -> bytes:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+    fig.savefig(buf, format=fmt, dpi=dpi, bbox_inches="tight")
     buf.seek(0)
     return buf.read()
 
 
-def _fig_to_pdf_bytes(fig) -> bytes:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="pdf", bbox_inches="tight")
-    buf.seek(0)
-    return buf.read()
+def _punktliste(key: str, phi_sel, sig_max: float):
+    if key not in st.session_state:
+        st.session_state[key] = []
+    ca, cb = st.columns(2)
+    with ca:
+        p = st.selectbox("Stangdiameter φ [mm]", phi_sel, key=f"{key}_phi")
+    with cb:
+        s = st.number_input("Spenning σ [MPa]", min_value=0.0, max_value=float(sig_max),
+                            value=min(200.0, float(sig_max)), step=5.0, key=f"{key}_sig")
+    if st.button("Legg til punkt", key=f"{key}_add"):
+        st.session_state[key].append((p, float(s)))
+    if st.session_state[key]:
+        st.markdown("**Lagde punkt:**")
+        fjern = []
+        for i, (pp, ss) in enumerate(st.session_state[key]):
+            c1_, c2_ = st.columns([3, 1])
+            c1_.write(f"φ{pp} mm,  {ss:.0f} MPa")
+            if c2_.button("✕", key=f"{key}_rm_{i}"):
+                fjern.append(i)
+        for i in reversed(fjern):
+            st.session_state[key].pop(i)
+        if st.button("Nullstill alle punkt", key=f"{key}_clear"):
+            st.session_state[key] = []
 
 
 # ══════════════════════════════════════════════════════════
 # TAB 1 – Bøyediameter
 # ══════════════════════════════════════════════════════════
-
 with tab1:
-    st.header("Bøyediameter – formel (8.1)")
+    st.header("Bøyediameter – §8.3 uttrykk (8.1) og NA.8.3(2)")
 
-    # ── Formelreferanse ────────────────────────────────────
-    with st.expander("📐 Formelreferansar – NS-EN 1992-1-1"):
+    with st.expander("📐 Formelreferansar"):
         st.markdown(r"""
-**§ 8.3(3) Formel (8.1)**
+**§8.3(3) uttrykk (8.1)**
 
 $$
-F_{bt} \left(\frac{1}{a_b} + \frac{1}{2\phi}\right) \leq f_{cd}
-$$
-
-der den naudsynte bøyediameteren vert
-
-$$
-\phi_{m} = \frac{F_{bt}}{f_{cd}} \left(\frac{1}{a_b} + \frac{1}{2\phi}\right)^{-1}
-\quad \text{[mm]}
+\phi_{m,min} \geq \frac{F_{bt}\left(\dfrac{1}{a_b} + \dfrac{1}{2\phi}\right)}{f_{cd}}
 $$
 
 | Symbol | Forklaring |
 |--------|-----------|
-| $F_{bt}$ | Strekkkraft i stangen ved bøyepunktet: $F_{bt} = \pi(\phi/2)^2 \cdot \sigma$ [N] |
-| $a_b$ | Halve senteravstanden mellom stengene (eller kantavstand) [mm] |
-| $\phi$ | Stangdiameter [mm] |
-| $f_{cd}$ | Dimensjonerande trykkfasthet betong [MPa] |
+| $F_{bt}$ | Strekkraft i stanga ved byrjinga av bøyen i bruddgrensetilstand: $F_{bt} = \pi(\phi/2)^2\cdot\sigma$ [N] |
+| $a_b$ | Halve senteravstanden mellom stengene vinkelrett på bøyens plan. For stang mot ytterkant: $a_b = c + \phi/2$ [mm] |
+| $f_{cd}$ | $\alpha_{cc} f_{ck}/\gamma_C$, men ikkje høgare enn for C55/67 [MPa] |
 
-**Minstediameter** – Tabell NA.8.1N.c) i NS-EN 1992-1-1:
+**NA.8.3(2):** Dordiameteren skal ikkje vere mindre enn den største av verdien i
+tabell NA.8.1N og verdien frå uttrykk (8.1).
 
-| Stangdiameter φ (mm) | 12 | 16 | 20 | 25 | 32 |
+**Tabell NA.8.1N.c)** – B500NC etter NS 3576:
+
+| φ (mm) | 12 | 16 | 20 | 25 | 32 |
 |---|---|---|---|---|---|
-| φ_m,min (mm) | 32 | 50 | 80 | 125 | 160 |
+| φm,min (mm) | 32 | 50 | 80 | 125 | 160 |
 """)
 
-    # ── Inndata ────────────────────────────────────────────
     col_inp, col_plot = st.columns([1, 2.5])
 
     with col_inp:
         st.subheader("Inndata")
 
-        fcd = st.number_input(
-            "Dimensjonerande trykkfasthet fcd [MPa]",
-            min_value=1.0, max_value=100.0, value=25.5, step=0.5,
-            help="Døme: C30/37 → fcd = 25.5 MPa,  C35/45 → fcd = 29.75 MPa",
+        fck_b = st.selectbox(
+            "Betongfasthet fck [MPa]", mat.FCK_LISTE, index=mat.FCK_LISTE.index(45),
+            key="boye_fck",
+            help="fcd = αcc · fck / γC. §8.3(3): «Verdien av fcd velges ikke høyere enn "
+                 "verdien for fasthetsklasse C55/67.» Grunnen er at høgfast betong er "
+                 "sprøare, og at (8.1) er ein modell for knusing/splitting av betongen "
+                 "innanfor bøyen som ikkje er verifisert for høgare fastheiter.",
         )
+        fcd, fck_brukt, avgrensa = ec2_boye.fcd_boey(fck_b, gamma_c)
+        st.markdown(f"fcd = {mat.ALPHA_CC} · {fck_brukt} / {gamma_c:.2f} = **{fcd:.2f} MPa**")
+        if avgrensa:
+            st.warning(f"fck = {fck_b} MPa er avgrensa til {mat.FCK_MAKS_BOEY} MPa (C55/67) "
+                       "i uttrykk (8.1), jf. siste avsnitt i §8.3(3).")
+
+        st.divider()
+        ab_modus = st.radio("Bestemming av a_b", ec2_boye.AB_MODUSAR, key="ab_modus")
+        with st.expander("ℹ️ Kvar kjem a_b frå?"):
+            st.markdown(
+                "Definisjonen står rett under uttrykk (8.1) i **§8.3(3)** "
+                "(side 132 i NS-EN 1992-1-1):\n\n"
+                "> *ab – for en gitt stang (eller armeringsbunt) er halve senteravstanden "
+                "mellom stengene (eller armeringsbunt) vinkelrett på bøyens plan. For en stang "
+                "eller gruppe av stenger mot ytterkant av en konstruksjonsdel bør ab antas å "
+                "være overdekningen pluss φ/2.*\n\n"
+                "Altså: a_b er avstanden frå senter av stanga til nærmaste «frie» kant av den "
+                "betongskiva som tek opp trykket frå bøyen – anten halve avstanden til nabostanga "
+                "eller overdekninga til betongflata + φ/2."
+            )
+        if ab_modus == ec2_boye.AB_MODUSAR[0]:
+            s_per_phi = {}
+            cols = st.columns(len(ec2_boye.PHI_LIST))
+            for col, phi in zip(cols, ec2_boye.PHI_LIST):
+                s_per_phi[phi] = col.number_input(f"s ø{phi}", min_value=20, max_value=1000,
+                                                  value=ec2_boye.S_STANDARD[phi], step=5,
+                                                  key=f"s_boye_{phi}")
+            ab = ec2_boye.ab_map(ab_modus, s_per_phi=s_per_phi)
+        elif ab_modus == ec2_boye.AB_MODUSAR[1]:
+            s_f = st.number_input("Senteravstand s [mm]", min_value=20, max_value=1000,
+                                  value=150, step=5, key="s_boye_felles")
+            ab = ec2_boye.ab_map(ab_modus, s_felles=s_f)
+        else:
+            c_b = st.number_input("Overdekning c [mm]", min_value=5, max_value=200,
+                                  value=50, step=5, key="c_boye")
+            ab = ec2_boye.ab_map(ab_modus, c=c_b)
+        st.caption("a_b [mm]:  " + "  |  ".join(f"ø{p}: {ab[p]:.1f}" for p in ec2_boye.PHI_LIST))
 
         st.divider()
         st.markdown("**Eige punkt å markere i plottet**")
+        sigma_max_b = int(round(fyd))
+        _punktliste("boye_custom", ec2_boye.PHI_LIST, sigma_max_b)
 
-        phi_options = [12, 16, 20, 25, 32]
-        col_a, col_b = st.columns(2)
-        with col_a:
-            custom_phi = st.selectbox("Stangdiameter φ [mm]", phi_options, key="boye_phi")
-        with col_b:
-            custom_sig = st.number_input(
-                "Spenning σ [MPa]", min_value=0.0, max_value=435.0,
-                value=200.0, step=5.0, key="boye_sig",
-            )
-
-        if st.button("Legg til punkt", key="boye_add"):
-            if "boye_custom" not in st.session_state:
-                st.session_state["boye_custom"] = []
-            st.session_state["boye_custom"].append((custom_phi, float(custom_sig)))
-
-        # Vis og fjern eigendefinerte punkt
-        if "boye_custom" not in st.session_state:
-            st.session_state["boye_custom"] = []
-
-        if st.session_state["boye_custom"]:
-            st.markdown("**Lagde punkt:**")
-            to_remove = []
-            for i, (p, s) in enumerate(st.session_state["boye_custom"]):
-                ccol1, ccol2 = st.columns([3, 1])
-                ccol1.write(f"φ{p} mm,  {s:.0f} MPa")
-                if ccol2.button("✕", key=f"boye_rm_{i}"):
-                    to_remove.append(i)
-            for i in reversed(to_remove):
-                st.session_state["boye_custom"].pop(i)
-            if st.button("Nullstill alle punkt", key="boye_clear"):
-                st.session_state["boye_custom"] = []
-
-    # ── Plot ───────────────────────────────────────────────
     with col_plot:
-        data = ec2_boye.berekn_kurvar(fcd)
+        data = ec2_boye.berekn_kurvar(fcd, ab, sigma_max=sigma_max_b)
         sigma = data["sigma"]
-        d_bend_masked = data["d_bend_masked"]
-        min_bend = data["min_bend"]
-
         fig, ax = plt.subplots(figsize=(10, 6))
-
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-        for idx, phi in enumerate(ec2_boye.PHI_LIST):
-            dm = d_bend_masked[phi]
-            ax.plot(sigma, dm, label=f"ø{phi} mm", color=colors[idx % len(colors)])
 
-            # Snap-punkt kvar 25 MPa
-            snap_sig = np.arange(0, 436, 25)
-            snap_Fbt = np.pi * (phi / 2) ** 2 * snap_sig
-            snap_db = snap_Fbt * (1 / ec2_boye.AB_LIST[idx] + 1 / (2 * phi)) / fcd
-            snap_dm = np.where(snap_db >= min_bend[phi], snap_db, np.nan)
-            valid_snaps = np.where(~np.isnan(snap_dm))[0]
-            if valid_snaps.size > 1:
-                pidx = valid_snaps[1:]
-                ax.scatter(snap_sig[pidx], snap_dm[pidx], s=30, marker="o",
-                           color=colors[idx % len(colors)])
-                for x, y in zip(snap_sig[pidx], snap_dm[pidx]):
+        for idx, phi in enumerate(ec2_boye.PHI_LIST):
+            clr = colors[idx % len(colors)]
+            dm = data["d_bend_masked"][phi]
+            ax.plot(sigma, dm, label=f"ø{phi} mm", color=clr)
+
+            snap_sig = np.arange(0, sigma_max_b + 1, 25)
+            snap = dm[snap_sig]
+            valid = np.where(~np.isnan(snap))[0]
+            if valid.size > 1:
+                pidx = valid[1:]
+                ax.scatter(snap_sig[pidx], snap[pidx], s=30, color=clr)
+                for x, y in zip(snap_sig[pidx], snap[pidx]):
                     ax.annotate(f"{y:.0f}", (x, y), textcoords="offset points",
                                 xytext=(0, 5), ha="center", fontsize=7)
+            vi = np.where(~np.isnan(dm))[0]
+            if vi.size > 0:
+                for e in (vi[0], vi[-1]):
+                    ax.scatter(sigma[e], dm[e], s=40, color="black", zorder=5)
+                    ax.annotate(f"{dm[e]:.0f}", (sigma[e], dm[e]), textcoords="offset points",
+                                xytext=(0, 9), ha="center", fontsize=8)
 
-            # Første og siste gyldige punkt
-            valid_idx = np.where(~np.isnan(dm))[0]
-            if valid_idx.size > 0:
-                for end_i in [valid_idx[0], valid_idx[-1]]:
-                    ax.scatter(sigma[end_i], dm[end_i], s=40, color="black", zorder=5)
-                    ax.annotate(f"{dm[end_i]:.0f}", (sigma[end_i], dm[end_i]),
-                                textcoords="offset points", xytext=(0, 9),
-                                ha="center", fontsize=8)
-
-        # Eigendefinerte punkt
         for phi_c, sig_c in st.session_state.get("boye_custom", []):
-            d, min_b = ec2_boye.berekn_boeyediameter(phi_c, sig_c, fcd)
-            if d >= min_b:
-                ax.scatter([sig_c], [d], color="red", s=100, marker="*",
-                           zorder=10, label=f"ø{phi_c}, {sig_c:.0f} MPa")
+            d, mn = ec2_boye.berekn_boeyediameter(phi_c, sig_c, fcd, ab[phi_c])
+            if d >= mn:
+                ax.scatter([sig_c], [d], color="red", s=100, marker="*", zorder=10,
+                           label=f"ø{phi_c}, {sig_c:.0f} MPa")
                 ax.annotate(f"{d:.0f}", (sig_c, d), textcoords="offset points",
                             xytext=(0, 10), ha="center", fontsize=10, color="red")
             else:
-                st.warning(
-                    f"φ{phi_c}, {sig_c:.0f} MPa: berekna bøyediameter {d:.1f} mm "
-                    f"er under minstediameter φm,min = {min_b:.0f} mm – vert ikkje plotta."
-                )
+                st.info(f"φ{phi_c}, {sig_c:.0f} MPa: (8.1) gir {d:.1f} mm < {mn:.0f} mm frå "
+                        f"tabell NA.8.1N.c) → tabellverdien {mn:.0f} mm er dimensjonerande.")
 
-        ax.set_title(
-            f"Naudsynt bøyediameter per NS-EN 1992-1-1 formel (8.1)\n"
-            f"fcd = {fcd} MPa",
-            fontsize=12,
-        )
+        ax.set_title(f"Naudsynt dordiameter etter uttrykk (8.1) – {situasjon}\n"
+                     f"fcd = {fcd:.2f} MPa  (kurva vist der (8.1) gir meir enn tabell NA.8.1N.c)",
+                     fontsize=11)
         ax.set_xlabel("Strekkspenning σ [MPa]")
-        ax.set_ylabel("Naudsynt bøyediameter [mm]")
+        ax.set_ylabel("Naudsynt dordiameter φm,min [mm]")
         ax.set_ylim(0, 400)
-        ax.set_xlim(0, 435)
+        ax.set_xlim(0, sigma_max_b)
         ax.legend(loc="upper left", fontsize=9)
         ax.grid(True, alpha=0.4)
         fig.tight_layout()
-
         st.pyplot(fig)
 
-        png_bytes      = _fig_to_png_bytes(fig, dpi=300)
-        pdf_plot_bytes = _fig_to_pdf_bytes(fig)
-        rapport_bytes  = ec2_rapport.lag_rapport_boye(
-            fcd, fig,
+        rapport_bytes = ec2_rapport.lag_rapport_boye(
+            fck_b, fcd, fck_brukt, avgrensa, situasjon, gamma_c, gamma_s,
+            ab_modus, ab, sigma_max_b, fig,
             custom_points=st.session_state.get("boye_custom", []),
         )
+        png_b, pdf_b = _fig_to_bytes(fig, "png"), _fig_to_bytes(fig, "pdf")
         plt.close(fig)
 
-        dl1, dl2, dl3 = st.columns(3)
-        dl1.download_button(
-            "⬇️ Plott som PNG (300 dpi)",
-            png_bytes,
-            file_name="boeyediameter_EC2.png",
-            mime="image/png",
-        )
-        dl2.download_button(
-            "⬇️ Plott som PDF",
-            pdf_plot_bytes,
-            file_name="boeyediameter_EC2.pdf",
-            mime="application/pdf",
-        )
-        dl3.download_button(
-            "📄 Berekningstillegg (PDF)",
-            rapport_bytes,
-            file_name="berekningstillegg_boeyediameter.pdf",
-            mime="application/pdf",
-        )
+        d1, d2, d3 = st.columns(3)
+        d1.download_button("⬇️ Plott som PNG (300 dpi)", png_b, "boeyediameter_EC2.png", "image/png")
+        d2.download_button("⬇️ Plott som PDF", pdf_b, "boeyediameter_EC2.pdf", "application/pdf")
+        d3.download_button("📄 Berekningstillegg (PDF)", rapport_bytes,
+                           "berekningstillegg_boeyediameter.pdf", "application/pdf")
 
 
 # ══════════════════════════════════════════════════════════
 # TAB 2 – Omfaring og forankring
 # ══════════════════════════════════════════════════════════
-
 with tab2:
-    st.header("Omfaring og forankring – §8.4 og §8.7")
+    st.header(f"Omfaring og forankring – §8.4, §8.7 og §8.9  ({tilstand.lower()})")
 
-    # ── Formelreferanse ────────────────────────────────────
-    with st.expander("📐 Formelreferansar – NS-EN 1992-1-1"):
+    with st.expander("📐 Formelreferansar"):
         st.markdown(r"""
-**§ 8.4.2 Formel (8.2)** – Dimensjonerande heftfasthet
+**§8.4.2 (8.2)** $f_{bd} = 2.25\,\eta_1\,\eta_2\,f_{ctd}$, der $f_{ctd} = \alpha_{ct} f_{ctk,0.05}/\gamma_C$
+og $f_{ctk,0.05}$ er avgrensa til verdien for C60/75.
 
-$$
-f_{bd} = 2{,}25 \cdot \eta_1 \cdot \eta_2 \cdot f_{ctd}
-$$
+**§8.4.3 (8.3)** $l_{b,rqd} = \dfrac{\phi}{4}\cdot\dfrac{\sigma_{sd}}{f_{bd}}$
 
-**§ 8.4.3 Formel (8.3)** – Grunnleggjande forankringslengde
+**§8.4.4 (8.4)** $l_{bd} = \alpha_1\alpha_2\alpha_3\alpha_4\alpha_5\,l_{b,rqd} \geq l_{b,min}$, med $\alpha_2\alpha_3\alpha_5 \geq 0.7$ (8.5)
 
-$$
-l_{b,rqd} = \frac{\phi_n}{4} \cdot \frac{\sigma_{sd}}{f_{bd}}
-$$
+- (8.6) strekk: $l_{b,min} = \max(0.3\,l_{b,rqd};\ 10\phi;\ 100\text{ mm})$
+- (8.7) trykk: $l_{b,min} = \max(0.6\,l_{b,rqd};\ 10\phi;\ 100\text{ mm})$
 
-**§ 8.4.4 Formel (8.4)** – Dimensjonerande forankringslengde
+**§8.7.3 (8.10)** $l_0 = \alpha_1\alpha_2\alpha_3\alpha_5\alpha_6\,l_{b,rqd} \geq l_{0,min}$
 
-$$
-l_{bd} = \alpha_1 \cdot \alpha_2 \cdot \alpha_3 \cdot \alpha_4 \cdot \alpha_5 \cdot l_{b,rqd} \geq l_{b,min}
-$$
+**§8.7.3 (8.11)** $l_{0,min} = \max(0.3\,\alpha_6\,l_{b,rqd};\ 15\phi;\ 200\text{ mm})$
 
-**§ 8.7.3 Formel (8.10)** – Omfaringslengde
+**Tabell 8.2 (strekk)**
+- $\alpha_1$: rett = 1.0; ikkje rett = 0.7 dersom $c_d > 3\phi$, elles 1.0
+- $\alpha_2$: rett $1-0.15(c_d-\phi)/\phi$; ikkje rett $1-0.15(c_d-3\phi)/\phi$; $0.7 \le \alpha_2 \le 1.0$
+- $\alpha_3 = 1 - K\lambda$, $\lambda = (\Sigma A_{st} - \Sigma A_{st,min})/A_s$; $0.7 \le \alpha_3 \le 1.0$
+  - forankring: $\Sigma A_{st,min}$ = 0.25 $A_s$ (bjelkar) / 0 (plater)
+  - omfaring §8.7.3(1): $\Sigma A_{st,min} = A_s\,\sigma_{sd}/f_{yd}$
+- $\alpha_4$ = 0.7 ved sveist tverrarmering
+- $\alpha_5 = 1-0.04p$; $0.7 \le \alpha_5 \le 1.0$
+- $\alpha_6 = (\rho_1/25)^{0.5}$; $1.0 \le \alpha_6 \le 1.5$
 
-$$
-l_0 = \alpha_1 \cdot \alpha_2 \cdot \alpha_3 \cdot \alpha_5 \cdot \alpha_6 \cdot l_{b,rqd} \geq l_{0,min}
-$$
+**Tabell 8.2 (trykk):** $\alpha_1 = \alpha_2 = \alpha_3 = 1.0$, $\alpha_4 = 0.7$, $\alpha_5$ ikkje aktuell.
 
-**§ 8.7.3 Formel (8.11)** – Minste omfaringslengde
+**Figur 8.3:** a) $c_d = \min(a/2;\ c_1;\ c)$ · b) $c_d = \min(a/2;\ c_1)$ · c) $c_d = c$,
+der *a* er **fri** avstand mellom stengene.
 
-$$
-l_{0,min} = \max\!\left(0{,}3 \cdot \alpha_6 \cdot l_{b,rqd};\; 15\phi_n;\; 200\text{ mm}\right)
-$$
-
-| Symbol | Forklaring |
-|--------|-----------|
-| $\eta_1$ | Heftforhold: 1,0 (gode) / 0,7 (dårlege) |
-| $\eta_2$ | Stangfaktor: 1,0 viss φ ≤ 32 mm, elles (132−φ)/100 |
-| $f_{ctd}$ | Dimensjonerande strekkfasthet: $0{,}85 \cdot 0{,}7 \cdot f_{ctm} / 1{,}5$ |
-| $\phi_n$ | Ekvivalent diameter for bunt: $\phi\sqrt{n}$ |
-| $\alpha_{1..6}$ | Reduksjonskoeffisientar, sjå Tabell 8.2 |
-| $\alpha_6$ | Funksjon av prosentdel omfarte stenger $\rho_1$ |
+**§8.9 Buntar:** $\phi_n = \phi\sqrt{n_b} \le 55$ mm. $n_b \le 4$ for vertikale stenger i trykk og i
+omfaringsskøyt, elles $n_b \le 3$.
 """)
 
-    # ── Inndata ────────────────────────────────────────────
     col_inp2, col_plot2 = st.columns([1, 2.5])
 
     with col_inp2:
         st.subheader("Inndata")
-
-        fck_options = [12, 16, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70, 80, 90]
-        fck = st.selectbox(
-            "Karakteristisk trykkfasthet fck [MPa]",
-            fck_options, index=fck_options.index(45),
-            help="Betongklasse per Tabell 3.1 NS-EN 1992-1-1",
-        )
-        fctm_val = ec2_omfar.hent_fctm(fck)
-        st.caption(f"fctm = {fctm_val:.1f} MPa  (Tabell 3.1)")
+        fck = st.selectbox("Betongfasthet fck [MPa]", mat.FCK_LISTE,
+                           index=mat.FCK_LISTE.index(45), key="omfar_fck")
+        fck_h = min(fck, mat.FCK_MAKS_HEFT)
+        st.caption(f"fctm = {mat.hent_fctm(fck_h):.1f} MPa (Tabell 3.1"
+                   + (f", avgrensa til C60/75 jf. §8.4.2(2))" if fck > mat.FCK_MAKS_HEFT else ")"))
+        if fck > mat.FCK_MAKS_HEFT:
+            st.warning("§8.4.2(2): fctk,0.05 er avgrensa til verdien for C60/75 på grunn av "
+                       "auka sprøheit i høgfast betong, med mindre auka heftfasthet kan påvisast.")
 
         eta_01 = st.selectbox(
-            "Heftforhold η₁",
-            options=[1.0, 0.7],
-            format_func=lambda x: "Gode tilhøve (η₁ = 1,0)" if x == 1.0 else "Dårlege tilhøve (η₁ = 0,7)",
-            help="§8.4.2(2): gode tilhøve = botnarmering, øvre armering i h < 300 mm, skråarmering > 45°",
+            "Heftforhold η₁", [1.0, 0.7],
+            format_func=lambda x: "Gode (η₁ = 1.0)" if x == 1.0 else "Dårlege (η₁ = 0.7)",
+            help="§8.4.2(2) og figur 8.2.",
         )
-
         n = st.number_input("Antal stenger i bunt n", min_value=1, max_value=4, value=1, step=1)
-        c = st.number_input("Overdekning c [mm]", min_value=5, max_value=200, value=65, step=5)
-        a = st.number_input("Senteravstand mellom stenger a [mm]", min_value=10, max_value=500, value=85, step=5)
-
-        type_kobling = st.selectbox(
-            "Koblingstype (figur 8.3)",
-            options=["a", "b", "c"],
-            format_func=lambda x: {
-                "a": "a – Rette stenger",
-                "b": "b – Vinkelkroker eller kroker",
-                "c": "c – Sløyfer",
-            }[x],
-        )
-
-        stangplassering = st.selectbox(
-            "Plassering av stang (K-faktor)",
-            options=["Utenfor", "Innenfor", "I bøy"],
-            index=1,
-            help="Utenfor: K=0  |  Innenfor: K=0,05  |  I bøy: K=0,1",
-        )
-
-        rho = st.number_input(
-            "Trykkspenning i tverretning ρ [MPa]",
-            min_value=0.0, max_value=100.0, value=0.0, step=1.0,
-            help="α₅ = max(0,7; min(1,0; 1 − 0,04·ρ))",
-        )
-
-        rho_1 = st.number_input(
-            "Prosentdel omfarte stenger ρ₁ [%]",
-            min_value=0.0, max_value=100.0, value=50.0, step=5.0,
-            help="α₆ = max(1,0; min(1,5; (ρ₁/25)^0,5))",
-        )
-
-        sveist_tverrarmering = st.checkbox(
-            "Sveist tverrarmering (α₄ = 0,7)", value=False,
-            help="Kryssar NS-EN 1992-1-1 §8.4.4(2)",
-        )
-
-        sigma_s_max = st.number_input(
-            "Maks. armeringsspenning σ_s,max [MPa]",
-            min_value=100, max_value=600, value=500, step=25,
-        )
-
-        st.divider()
-        st.markdown("**Eige punkt å markere i plottet**")
-
-        col_c, col_d = st.columns(2)
-        with col_c:
-            custom_phi2 = st.selectbox("Stangdiameter φ [mm]", [12, 16, 20, 25, 32], key="omfar_phi")
-        with col_d:
-            custom_sig2 = st.number_input(
-                "Spenning σsd [MPa]", min_value=0.0, max_value=float(sigma_s_max),
-                value=min(200.0, float(sigma_s_max)), step=5.0, key="omfar_sig",
+        forskyvd = False
+        if n > 1 and not trykk:
+            forskyvd = st.checkbox(
+                "Enkeltstenger i bunten forankra forskyvd ≥ 1.3·lb,rqd",
+                help="§8.9.2(2): då kan stangdiameteren φ brukast for lbd. Elles φn.",
             )
 
-        if st.button("Legg til punkt", key="omfar_add"):
-            if "omfar_custom" not in st.session_state:
-                st.session_state["omfar_custom"] = []
-            st.session_state["omfar_custom"].append((custom_phi2, float(custom_sig2)))
+        s = st.number_input("Senteravstand mellom stenger s [mm]", min_value=10,
+                            max_value=1000, value=150, step=5)
+        a_vis = {p: ec2_omfar.fri_avstand(s, p, n) for p in ec2_omfar.PHI_LIST}
+        st.text_input("Fri avstand a = s − " + ("φ" if n == 1 else "2φ") + " [mm]",
+                      value="  |  ".join(f"ø{p}: {a_vis[p]:.0f}" for p in ec2_omfar.PHI_LIST),
+                      disabled=True)
+        cc1, cc2 = st.columns(2)
+        c = cc1.number_input("Overdekning c [mm]", min_value=5, max_value=200, value=65, step=5,
+                             help="Overdekning vinkelrett på flata stanga ligg mot (figur 8.3).")
+        c1 = cc2.number_input("Sideoverdekning c₁ [mm]", min_value=5, max_value=500, value=65,
+                              step=5, help="Overdekning til sideflata (figur 8.3).")
 
-        if "omfar_custom" not in st.session_state:
-            st.session_state["omfar_custom"] = []
-
-        if st.session_state["omfar_custom"]:
-            st.markdown("**Lagde punkt:**")
-            to_remove2 = []
-            for i, (p, s) in enumerate(st.session_state["omfar_custom"]):
-                ccol1, ccol2 = st.columns([3, 1])
-                ccol1.write(f"φ{p} mm,  {s:.0f} MPa")
-                if ccol2.button("✕", key=f"omfar_rm_{i}"):
-                    to_remove2.append(i)
-            for i in reversed(to_remove2):
-                st.session_state["omfar_custom"].pop(i)
-            if st.button("Nullstill alle punkt", key="omfar_clear"):
-                st.session_state["omfar_custom"] = []
-
-    # ── Plot ───────────────────────────────────────────────
-    with col_plot2:
-        kurvar = ec2_omfar.berekn_kurvar(
-            fck=fck, eta_01=eta_01, n=n, c=c, a=a,
-            type_kobling=type_kobling, sum_ast=0,
-            stangplassering=stangplassering, rho=rho,
-            rho_1=rho_1, sveist_tverrarmering=sveist_tverrarmering,
-            sigma_s_max=sigma_s_max,
+        type_kobling = st.selectbox(
+            "Koblingstype (figur 8.3)", ["a", "b", "c"],
+            format_func=lambda x: f"{x} – {ec2_omfar.TYPE_TEKST[x]}",
         )
-        sigma_sd_arr = kurvar["sigma_sd"]
-        l0_kurvar    = kurvar["l0"]
-        lbd_kurvar   = kurvar["lbd"]
+        with st.expander("🖼️ Skisse av c, c₁ og a (figur 8.3)", expanded=True):
+            phi_fig = st.selectbox("Vis for φ [mm]", ec2_omfar.PHI_LIST, index=2, key="fig_phi")
+            a_fig = ec2_omfar.fri_avstand(s, phi_fig, int(n))
+            cd_fig = ec2_omfar.get_cd(type_kobling, a_fig, c, c1)
+            f_cd = ec2_figur.figur_cd(type_kobling, c, c1, s, phi_fig, a_fig, cd_fig)
+            st.pyplot(f_cd)
+            plt.close(f_cd)
 
+        if not trykk:
+            konstruksjon = st.selectbox(
+                "Konstruksjonsdel (ΣAst,min for forankring)", ["Bjelke", "Plate"],
+                help="Tabell 8.2: ΣAst,min = 0.25·As for bjelkar og 0 for plater. "
+                     "For omfaring vert ΣAst,min = As·σsd/fyd brukt, jf. §8.7.3(1).",
+            )
+            sum_ast = st.number_input(
+                "Tverrarmering langs lbd/l0, ΣAst [mm²]", min_value=0.0, max_value=10000.0,
+                value=0.0, step=50.0,
+                help="Tverrsnittsareal av tverrarmering (ikkje sveist) langs lengda. "
+                     "0 gir α3 = 1.0 (konservativt).",
+            )
+            stangplassering = st.selectbox(
+                "Plassering av stang (K, figur 8.4)", list(ec2_omfar.K_MAP.keys()), index=1,
+                help="Utanfor tverrarm.: K = 0 · Innanfor: K = 0.05 · I bøyen: K = 0.1",
+            )
+            rho = st.number_input("Trykk i tverretning p [MPa]", min_value=0.0, max_value=100.0,
+                                  value=0.0, step=1.0, help="α5 = 1 − 0.04p, 0.7 ≤ α5 ≤ 1.0")
+        else:
+            konstruksjon, sum_ast, stangplassering, rho = "Bjelke", 0.0, "Utanfor", 0.0
+
+        rho_1 = st.number_input("Prosentdel omfarte stenger ρ₁ [%]", min_value=0.0,
+                                max_value=100.0, value=50.0, step=5.0,
+                                help="α6 = (ρ1/25)^0.5, 1.0 ≤ α6 ≤ 1.5 (Tabell 8.3)")
+        sveist = st.checkbox("Sveist tverrarmering (α₄ = 0.7)", value=False,
+                             help="Tabell 8.2 og §8.6. Gjeld berre forankring.")
+        sigma_s_max = st.number_input(
+            "Maks. armeringsspenning i plott σs,max [MPa]", min_value=100, max_value=600,
+            value=500, step=25,
+            help="Vert brukt for å vurdere ulykkessituasjon (ALS). Merk at σsd ikkje kan "
+                 "overstige fyd for valt situasjon.",
+        )
+        st.divider()
+        st.markdown("**Eige punkt å markere i plottet**")
+        _punktliste("omfar_custom", ec2_omfar.PHI_LIST, sigma_s_max)
+
+    felles = dict(
+        fck=fck, gamma_c=gamma_c, gamma_s=gamma_s, trykk=trykk, eta_01=eta_01, n=int(n),
+        s=s, c=c, c1=c1, type_kobling=type_kobling, sum_ast=sum_ast,
+        konstruksjon=konstruksjon, stangplassering=stangplassering, rho=rho, rho_1=rho_1,
+        sveist_tverrarmering=sveist, forskyvd_forankring=forskyvd,
+    )
+
+    with col_plot2:
+        kurvar = ec2_omfar.berekn_kurvar(sigma_s_max=int(sigma_s_max), **felles)
+        sig_arr = kurvar["sigma_sd"]
         type_tekst = ec2_omfar.get_type_kobling_tekst(type_kobling)
         param_text = (
-            rf"$f_{{ck}}$={fck} MPa,  $\eta_1$={eta_01},  n={n},  "
-            rf"c={c} mm,  a={a} mm,  {type_tekst},  "
-            rf"Stangplassering: {stangplassering},  $\rho_1$={rho_1:.0f}%"
+            f"{tilstand}, {situasjon}  |  fck = {fck} MPa, η₁ = {eta_01}, n = {n}, s = {s} mm, "
+            f"c = {c} mm, c₁ = {c1} mm, {type_tekst}, ρ₁ = {rho_1:.0f} %"
         )
 
         fig2, (ax_l0, ax_lbd) = plt.subplots(1, 2, figsize=(14, 6))
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
         for idx, phi in enumerate(ec2_omfar.PHI_LIST):
             clr = colors[idx % len(colors)]
-            ax_l0.plot(sigma_sd_arr, l0_kurvar[phi],  label=rf"$l_{{0,ø{phi}}}$",  color=clr)
-            ax_lbd.plot(sigma_sd_arr, lbd_kurvar[phi], label=rf"$l_{{bd,ø{phi}}}$", color=clr)
+            ax_l0.plot(sig_arr, kurvar["l0"][phi], label=f"l0, ø{phi}", color=clr)
+            ax_lbd.plot(sig_arr, kurvar["lbd"][phi], label=f"lbd, ø{phi}", color=clr)
 
-        # Eigendefinerte punkt
         for phi_c, sig_c in st.session_state.get("omfar_custom", []):
-            l0_c, lbd_c = ec2_omfar.beregn_omfarOgForankring(
-                fck, eta_01, phi_c, n, sig_c, c, a,
-                type_kobling, 0, stangplassering, rho, rho_1, sveist_tverrarmering,
-            )
-            lbl_l0  = f"ø{phi_c}, {sig_c:.0f} MPa (omf.)"
-            lbl_lbd = f"ø{phi_c}, {sig_c:.0f} MPa (forankr.)"
-            ax_l0.scatter([sig_c], [l0_c],   color="red", s=100, marker="*", zorder=10, label=lbl_l0)
-            ax_l0.annotate(f"{l0_c:.0f}",  (sig_c, l0_c),  textcoords="offset points",
-                           xytext=(0, 10), ha="center", fontsize=10, color="red")
-            ax_lbd.scatter([sig_c], [lbd_c], color="red", s=100, marker="*", zorder=10, label=lbl_lbd)
-            ax_lbd.annotate(f"{lbd_c:.0f}", (sig_c, lbd_c), textcoords="offset points",
-                            xytext=(0, 10), ha="center", fontsize=10, color="red")
+            l0_c, lbd_c = ec2_omfar.beregn_omfarOgForankring(phi=phi_c, sigma_sd=sig_c, **felles)
+            for ax_, v, t in ((ax_l0, l0_c, "omf."), (ax_lbd, lbd_c, "forankr.")):
+                if v is None:
+                    continue
+                ax_.scatter([sig_c], [v], color="red", s=100, marker="*", zorder=10,
+                            label=f"ø{phi_c}, {sig_c:.0f} MPa ({t})")
+                ax_.annotate(f"{v:.0f}", (sig_c, v), textcoords="offset points",
+                             xytext=(0, 10), ha="center", fontsize=10, color="red")
 
-        for ax, title in [
-            (ax_l0,  r"Naudsynt omfaringslengde $l_0$"),
-            (ax_lbd, r"Naudsynt forankringslengde $l_{bd}$"),
-        ]:
-            ax.set_xlabel(r"Armeringsspenning $\sigma_{sd}$ [MPa]")
-            ax.set_ylabel("Lengde [mm]")
-            ax.set_title(title)
-            ax.set_xlim(0, sigma_s_max)
-            ax.set_ylim(bottom=0)
-            ax.legend(loc="upper left", fontsize=9)
-            ax.grid(True, alpha=0.4)
-
-        fig2.suptitle(param_text, fontsize=11, y=1.01)
+        l0_tittel = "Naudsynt omfaringslengde l0 (avrunda opp til 100 mm)"
+        if n > 1:
+            l0_tittel += "\nbunt: sjå §8.9.3 for diameter og forskyving"
+        for ax_, title in ((ax_l0, l0_tittel), (ax_lbd, "Naudsynt forankringslengde lbd")):
+            ax_.axvline(fyd, color="grey", ls="--", lw=1)
+            ax_.text(fyd, 0.98, f" fyd = {fyd:.0f}", transform=ax_.get_xaxis_transform(),
+                     va="top", fontsize=8, color="grey")
+            ax_.set_xlabel("Armeringsspenning σsd [MPa]")
+            ax_.set_ylabel("Lengde [mm]")
+            ax_.set_title(title, fontsize=11)
+            ax_.set_xlim(0, sigma_s_max)
+            ax_.set_ylim(bottom=0)
+            ax_.legend(loc="upper left", fontsize=8)
+            ax_.grid(True, alpha=0.4)
+        fig2.suptitle(param_text, fontsize=10, y=1.01)
         fig2.tight_layout()
-
         st.pyplot(fig2)
 
-        png_bytes2      = _fig_to_png_bytes(fig2, dpi=300)
-        pdf_plot_bytes2 = _fig_to_pdf_bytes(fig2)
-        rapport_bytes2  = ec2_rapport.lag_rapport_omfar(
-            fck, eta_01, n, c, a, type_kobling,
-            stangplassering, rho, rho_1, sveist_tverrarmering, sigma_s_max,
-            fig2,
+        if sigma_s_max > fyd:
+            st.caption(f"Kurvene over fyd = {fyd:.0f} MPa (stipla line) er berre informative for "
+                       f"valt situasjon. For ALS: vel «Ulykke (ALS)» øvst (fyd = 500 MPa, γC = 1.20).")
+
+
+        d_fig = ec2_omfar.beregn_detaljar(phi=phi_fig, sigma_sd=fyd, **felles)
+        merk = []
+        for p in ec2_omfar.PHI_LIST:
+            for m in ec2_omfar.beregn_detaljar(phi=p, sigma_sd=fyd, **felles)["merknader"]:
+                merk.append(f"ø{p}: {m}")
+        if merk:
+            st.warning("**Merknader**  \n" + "  \n".join(f"• {m}" for m in merk))
+        if n > 1:
+            phi_n_fig = d_fig["phi_n"]
+            if d_fig["omfar_forskyving"]:
+                st.info(
+                    f"**Omfaring av bunt (§8.9.3(3))** – ø{phi_fig}, n = {n}, φn = {phi_n_fig:.1f} mm:  \n"
+                    f"Enkeltstengene skal forskyvast minst 1.3·l0, der l0 er rekna for éi stang "
+                    f"(φ = {phi_fig} mm). Ein ekstra (fjerde) omfaringsstang vert brukt, jf. figur 8.13. "
+                    f"Maks fire stenger i eitt snitt.  \n"
+                    f"l0 (éi stang) = {d_fig['l0_rund']} mm → forskyving ≥ 1.3·l0 = "
+                    f"{d_fig['forskyving']:.0f} mm, total skøytsone ≈ {n + 1}·1.3·l0 = "
+                    f"{(n + 1) * d_fig['forskyving']:.0f} mm."
+                )
+            elif n == 2 and d_fig["omfar"] is not None:
+                st.info(f"**Omfaring av bunt (§8.9.3(2))** – n = 2 og φn = {phi_n_fig:.1f} mm < 32 mm: "
+                        f"stengene kan skøytast utan forskyving, l0 vert rekna med φn.")
+
+
+        rapport2 = ec2_rapport.lag_rapport_omfar(
+            felles, situasjon, tilstand, int(sigma_s_max), fig2, kurvar,
             custom_points=st.session_state.get("omfar_custom", []),
         )
+        png2, pdf2 = _fig_to_bytes(fig2, "png"), _fig_to_bytes(fig2, "pdf")
         plt.close(fig2)
 
-        dl1, dl2, dl3 = st.columns(3)
-        dl1.download_button(
-            "⬇️ Plott som PNG (300 dpi)",
-            png_bytes2,
-            file_name="omfaring_forankring_EC2.png",
-            mime="image/png",
-        )
-        dl2.download_button(
-            "⬇️ Plott som PDF",
-            pdf_plot_bytes2,
-            file_name="omfaring_forankring_EC2.pdf",
-            mime="application/pdf",
-        )
-        dl3.download_button(
-            "📄 Berekningstillegg (PDF)",
-            rapport_bytes2,
-            file_name="berekningstillegg_omfaring_forankring.pdf",
-            mime="application/pdf",
-        )
+        d1, d2, d3 = st.columns(3)
+        d1.download_button("⬇️ Plott som PNG (300 dpi)", png2, "omfaring_forankring_EC2.png", "image/png")
+        d2.download_button("⬇️ Plott som PDF", pdf2, "omfaring_forankring_EC2.pdf", "application/pdf")
+        d3.download_button("📄 Berekningstillegg (PDF)", rapport2,
+                           "berekningstillegg_omfaring_forankring.pdf", "application/pdf")

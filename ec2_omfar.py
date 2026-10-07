@@ -1,155 +1,232 @@
 """
 ec2_omfar.py
-Bereknar omfarings- og forankringslengder per NS-EN 1992-1-1 §8.4 og §8.7.
+Forankrings- og omfaringslengder per NS-EN 1992-1-1:2004+A1:2014+NA:2024
+§8.4 (forankring), §8.7 (omfaring) og §8.9 (bunta armering).
 """
 
 import math
 
+import ec2_material as mat
+
 PHI_LIST = [12, 16, 20, 25, 32]
 
-# Tabell 3.1 NS-EN 1992-1-1 – middelverdi for strekkfasthet fctm [MPa]
-_FCTM_TABELL = {
-    12: 1.6, 16: 1.9, 20: 2.2, 25: 2.6, 30: 2.9,
-    35: 3.2, 40: 3.5, 45: 3.8, 50: 4.1, 55: 4.2,
-    60: 4.4, 70: 4.6, 80: 4.8, 90: 5.0,
-}
+TYPE_TEKST = {"a": "Rette stenger", "b": "Vinkelkroker eller kroker", "c": "Sløyfer"}
+K_MAP = {"Utanfor": 0.0, "Innanfor": 0.05, "I bøy": 0.1}   # Figur 8.4
 
-
-def hent_fctm(fck: float) -> float:
-    """Middelverdi for karakteristisk strekkfasthet frå Tabell 3.1 NS-EN 1992-1-1."""
-    if fck in _FCTM_TABELL:
-        return _FCTM_TABELL[fck]
-    naermast = min(_FCTM_TABELL.keys(), key=lambda x: abs(x - fck))
-    return _FCTM_TABELL[naermast]
+PHI_N_MAKS = 55.0      # uttrykk (8.14)
+PHI_LARGE_BUNT = 40.0  # NA.8.8(1)
 
 
 def get_type_kobling_tekst(type_kobling: str) -> str:
-    tekst = {"a": "Rette stenger", "b": "Vinkelkroker eller kroker", "c": "Sløyfer"}
-    return tekst.get(type_kobling, "Ukjend")
+    return TYPE_TEKST.get(type_kobling, "Ukjend")
 
 
-def _get_cd(type_kobling: str, a: float, c: float) -> float:
-    """Dimensjonerande kantavstand ved brudd, §8.4.4."""
-    if type_kobling in ("a", "b"):
-        return min(a / 2, c)
-    return c  # type c
+def fri_avstand(s: float, phi: float, n: int) -> float:
+    """
+    Fri avstand a mellom stenger/buntar (figur 8.3).
+    Enkeltstang: a = s − φ.
+    Bunt (§8.9.1(3)): fri avstand målt frå faktisk utvendig omkrins.
+    Konservativt er buntbreidda sett til 2φ for n ≥ 2 (stenger side om side).
+    """
+    b = phi if n == 1 else 2 * phi
+    return s - b
 
 
-def _get_alpha_1(type_kobling: str, cd: float, phi_n: float) -> float:
-    """α₁ – koeffisient for koblingstype, Tabell 8.2 NS-EN 1992-1-1."""
+def get_cd(type_kobling: str, a: float, c: float, c1: float) -> float:
+    """Figur 8.3."""
     if type_kobling == "a":
+        return min(a / 2, c1, c)
+    if type_kobling == "b":
+        return min(a / 2, c1)
+    return c
+
+
+def _eta_2(phi: float) -> float:
+    return 1.0 if phi <= 32 else (132 - phi) / 100
+
+
+def _alpha_1(trykk: bool, type_kobling: str, cd: float, phi: float) -> float:
+    if trykk or type_kobling == "a":
         return 1.0
-    return 0.7 if cd > 3 * phi_n else 1.0
+    return 0.7 if cd > 3 * phi else 1.0
 
 
-def _get_alpha_2(type_kobling: str, cd: float, phi_n: float) -> float:
-    """α₂ – koeffisient for inneslutningsverknad, Tabell 8.2 NS-EN 1992-1-1."""
+def _alpha_2(trykk: bool, type_kobling: str, cd: float, phi: float) -> tuple[float, float]:
+    """Returnerer (α2, urekna verdi før avgrensing)."""
+    if trykk:
+        return 1.0, 1.0
     if type_kobling == "a":
-        alpha = 1 - 0.15 * (cd - phi_n) / phi_n
+        raw = 1 - 0.15 * (cd - phi) / phi
     else:
-        alpha = 1 - 0.15 * (cd - 3 * phi_n) / phi_n
-    return max(0.7, min(1.0, alpha))
+        raw = 1 - 0.15 * (cd - 3 * phi) / phi
+    return max(0.7, min(1.0, raw)), raw
 
 
-def beregn_omfarOgForankring(
+def _alpha_3(trykk: bool, K: float, sum_ast: float, sum_ast_min: float, As: float) -> float:
+    if trykk:
+        return 1.0
+    lam = (sum_ast - sum_ast_min) / As
+    return max(0.7, min(1.0, 1 - K * lam))
+
+
+def _alpha_5(trykk: bool, p: float) -> float:
+    if trykk:
+        return 1.0          # Tabell 8.2: «–» for trykk
+    return max(0.7, min(1.0, 1 - 0.04 * p))
+
+
+def _alpha_6(rho_1: float) -> float:
+    return max(1.0, min(1.5, (rho_1 / 25) ** 0.5))
+
+
+def beregn_detaljar(
     fck: float,
+    gamma_c: float,
+    gamma_s: float,
+    trykk: bool,
     eta_01: float,
     phi: float,
     n: int,
     sigma_sd: float,
+    s: float,
     c: float,
-    a: float,
+    c1: float,
     type_kobling: str,
     sum_ast: float,
+    konstruksjon: str,
     stangplassering: str,
     rho: float,
     rho_1: float,
     sveist_tverrarmering: bool,
-) -> tuple[float, float]:
-    """
-    Bereknar omfarings- og forankringslengde per NS-EN 1992-1-1.
-
-    Returnerer (l0n400, lbd) i mm.
-    """
-    fctm    = hent_fctm(fck)
-    fctk005 = 0.7 * fctm
-    alpha_ct = 0.85
-    gamma_c  = 1.5
-    fctd    = alpha_ct * fctk005 / gamma_c          # §3.1.6(2) formel (3.19)
-    eta_02  = 1.0 if phi <= 32 else (132 - phi) / 100
-    fbd     = 2.25 * eta_01 * eta_02 * fctd         # §8.4.2 formel (8.2)
-    phi_n   = phi * math.sqrt(n)                     # ekvivalent diameter for bunt
-    As      = (math.pi / 4) * phi_n ** 2
-    lbrqd   = (phi_n / 4) * (abs(sigma_sd) / fbd)   # §8.4.3 formel (8.3)
-
-    cd      = _get_cd(type_kobling, a, c)
-    alpha_1 = _get_alpha_1(type_kobling, cd, phi_n)
-    alpha_2 = _get_alpha_2(type_kobling, cd, phi_n)
-
-    sum_astmin = As if phi_n >= 20 else 0
-    if stangplassering == "Utenfor":
-        k = 0
-    elif stangplassering == "Innenfor":
-        k = 0.05
-    else:  # I bøy
-        k = 0.1
-
-    alpha_3 = max(0.7, min(1.0, 1 - k * (sum_ast - sum_astmin) / As))
-    alpha_4 = 0.7
-    alpha_5 = max(0.7, min(1.0, 1 - 0.04 * rho))
-    alpha_6 = max(1.0, min(1.5, (rho_1 / 25) ** 0.5))
-
-    # Omfaringslengde §8.7.3 formel (8.10) og (8.11)
-    l0min = max(0.3 * lbrqd * alpha_6, 15 * phi_n, 200)
-    l0    = max(lbrqd * alpha_1 * alpha_2 * alpha_3 * alpha_5 * alpha_6, l0min)
-    l0n400 = math.ceil(l0 / 100) * 100
-
-    # Forankringslengde §8.4.4 formel (8.4)
-    lbdmin   = max(0.3 * lbrqd, 10 * phi_n, 100) if sigma_sd > 0 else max(0.6 * lbrqd, 10 * phi_n, 100)
-    alpha_235 = max(0.7, alpha_2 * alpha_3 * alpha_5)
-    if sveist_tverrarmering:
-        lbd = max(lbrqd * alpha_1 * alpha_235 * alpha_4, lbdmin)
-    else:
-        lbd = max(lbrqd * alpha_1 * alpha_235, lbdmin)
-
-    return l0n400, lbd
-
-
-def berekn_kurvar(
-    fck: float,
-    eta_01: float,
-    n: int,
-    c: float,
-    a: float,
-    type_kobling: str,
-    sum_ast: float,
-    stangplassering: str,
-    rho: float,
-    rho_1: float,
-    sveist_tverrarmering: bool,
-    sigma_s_max: int = 500,
+    forskyvd_forankring: bool = False,
 ) -> dict:
     """
-    Bereknar l0 og lbd for alle stangdiametrar over spenningsintervallet.
-
-    Returnerer dict med nøklar 'sigma_sd', 'l0', 'lbd' (begge som {phi: list}).
+    Full berekning med mellomresultat. sigma_sd er absoluttverdi [MPa].
+    Returnerer dict; 'lbd' / 'l0' er None dersom kombinasjonen ikkje er tillaten.
     """
-    sigma_sd_values = list(range(0, sigma_s_max + 1, 1))
-    l0_kurvar  = {phi: [] for phi in PHI_LIST}
-    lbd_kurvar = {phi: [] for phi in PHI_LIST}
+    sigma = abs(sigma_sd)
+    fyd = mat.fyd(gamma_s)
+    merknader = []
 
-    for sigma in sigma_sd_values:
-        for phi in PHI_LIST:
-            l0, lbd = beregn_omfarOgForankring(
-                fck, eta_01, phi, n, sigma, c, a,
-                type_kobling, sum_ast, stangplassering,
-                rho, rho_1, sveist_tverrarmering,
-            )
-            l0_kurvar[phi].append(l0)
-            lbd_kurvar[phi].append(lbd)
+    # ── Heftfasthet §8.4.2 ────────────────────────────────
+    fck_heft = min(fck, mat.FCK_MAKS_HEFT)
+    fctm = mat.hent_fctm(fck_heft)
+    fctk005 = 0.7 * fctm
+    fctd = mat.ALPHA_CT * fctk005 / gamma_c
 
-    return {
-        'sigma_sd': sigma_sd_values,
-        'l0':  l0_kurvar,
-        'lbd': lbd_kurvar,
-    }
+    phi_n = phi * math.sqrt(n)
+
+    # ── Kva diameter skal brukast? §8.9.2 og §8.9.3 ───────
+    if n == 1:
+        phi_forank = phi
+        phi_omfar = phi
+        omfar_forskyving = False
+    else:
+        phi_forank = phi if forskyvd_forankring else phi_n
+        if n == 2 and phi_n < 32:
+            phi_omfar = phi_n                # §8.9.3(2)
+            omfar_forskyving = False
+        elif n in (2, 3):
+            phi_omfar = phi                  # §8.9.3(3): enkeltstenger forskyvd 1.3·l0
+            omfar_forskyving = True
+        else:
+            phi_omfar = None                 # §8.9.3(3): > 3 stenger skal ikkje omfarast
+            omfar_forskyving = False
+
+    # ── Gyldigheit ────────────────────────────────────────
+    forank_ok = True
+    omfar_ok = phi_omfar is not None
+    if phi_n > PHI_N_MAKS:
+        forank_ok = omfar_ok = False
+        merknader.append(f"φn = {phi_n:.1f} mm > 55 mm – ikkje tillate, jf. (8.14).")
+    if n == 4 and not trykk:
+        forank_ok = False
+        merknader.append("n = 4 er berre tillate for vertikale stenger i trykk, jf. §8.9.1(2).")
+    if n >= 4:
+        merknader.append("Buntar med meir enn tre stenger skal ikkje omfarast, jf. §8.9.3(3).")
+    if n > 1 and phi_n >= 32 and not forskyvd_forankring and not trykk:
+        merknader.append(
+            f"φn = {phi_n:.1f} mm ≥ 32 mm: stengene i bunten bør forskyvast ved opplegg, jf. §8.9.2(1)."
+        )
+    if phi_n > PHI_LARGE_BUNT:
+        merknader.append(
+            f"φn = {phi_n:.1f} mm > φlarge = 40 mm for buntar (NA.8.8(1)): tilleggsreglar i §8.8 gjeld."
+        )
+
+    a = fri_avstand(s, phi, n)
+    cd = get_cd(type_kobling, a, c, c1)
+
+    def _ledd(phi_x: float, er_omfaring: bool) -> dict:
+        eta_2 = _eta_2(phi_x)
+        fbd = 2.25 * eta_01 * eta_2 * fctd
+        As = math.pi / 4 * phi_x ** 2
+        lbrqd = (phi_x / 4) * (sigma / fbd)
+        a1 = _alpha_1(trykk, type_kobling, cd, phi_x)
+        a2, a2_raw = _alpha_2(trykk, type_kobling, cd, phi_x)
+        if er_omfaring:
+            sum_ast_min = As * sigma / fyd                   # §8.7.3(1)
+        else:
+            sum_ast_min = 0.25 * As if konstruksjon == "Bjelke" else 0.0   # Tabell 8.2
+        K = K_MAP.get(stangplassering, 0.05)
+        a3 = _alpha_3(trykk, K, sum_ast, sum_ast_min, As)
+        a4 = 0.7 if sveist_tverrarmering else 1.0
+        a5 = _alpha_5(trykk, rho)
+        a6 = _alpha_6(rho_1)
+        return dict(phi_x=phi_x, eta_2=eta_2, fbd=fbd, As=As, lbrqd=lbrqd,
+                    a1=a1, a2=a2, a2_raw=a2_raw, sum_ast_min=sum_ast_min, K=K,
+                    a3=a3, a4=a4, a5=a5, a6=a6)
+
+    # ── Forankring §8.4.4 ─────────────────────────────────
+    fa = _ledd(phi_forank, er_omfaring=False)
+    a235 = max(0.7, fa["a2"] * fa["a3"] * fa["a5"])               # (8.5)
+    if trykk:
+        lbmin = max(0.6 * fa["lbrqd"], 10 * phi_forank, 100)       # (8.7)
+    else:
+        lbmin = max(0.3 * fa["lbrqd"], 10 * phi_forank, 100)       # (8.6)
+    lbd_raw = fa["a1"] * a235 * fa["a4"] * fa["lbrqd"]
+    lbd = max(lbd_raw, lbmin) if forank_ok else None
+
+    # ── Omfaring §8.7.3 ───────────────────────────────────
+    if omfar_ok:
+        fo = _ledd(phi_omfar, er_omfaring=True)
+        l0min = max(0.3 * fo["a6"] * fo["lbrqd"], 15 * phi_omfar, 200)   # (8.11)
+        l0_raw = fo["a1"] * fo["a2"] * fo["a3"] * fo["a5"] * fo["a6"] * fo["lbrqd"]
+        l0 = max(l0_raw, l0min)
+        l0_rund = math.ceil(l0 / 100) * 100
+        forskyving = 1.3 * l0_rund if omfar_forskyving else None
+    else:
+        fo, l0min, l0_raw, l0, l0_rund, forskyving = None, None, None, None, None, None
+
+    return dict(
+        fck=fck, fck_heft=fck_heft, fctm=fctm, fctk005=fctk005, fctd=fctd,
+        gamma_c=gamma_c, gamma_s=gamma_s, fyd=fyd, trykk=trykk,
+        phi=phi, n=n, phi_n=phi_n, sigma=sigma, s=s, a=a, c=c, c1=c1, cd=cd,
+        forank=fa, a235=a235, lbmin=lbmin, lbd_raw=lbd_raw, lbd=lbd,
+        omfar=fo, l0min=l0min, l0_raw=l0_raw, l0=l0, l0_rund=l0_rund,
+        omfar_forskyving=omfar_forskyving, forskyving=forskyving,
+        merknader=merknader,
+    )
+
+
+def beregn_omfarOgForankring(**kw) -> tuple:
+    """Kortform: returnerer (l0 avrunda opp til 100 mm, lbd) – None om ugyldig."""
+    d = beregn_detaljar(**kw)
+    return d["l0_rund"], d["lbd"]
+
+
+def berekn_kurvar(sigma_s_max: int = 500, **kw) -> dict:
+    """
+    l0 og lbd for alle stangdiametrar over σsd = 0 … sigma_s_max.
+    kw = alle argument til beregn_detaljar utanom phi og sigma_sd.
+    Ugyldige kombinasjonar vert lagra som float('nan').
+    """
+    nan = float("nan")
+    sig = list(range(0, sigma_s_max + 1, 1))
+    l0_k = {phi: [] for phi in PHI_LIST}
+    lbd_k = {phi: [] for phi in PHI_LIST}
+    for phi in PHI_LIST:
+        for s_ in sig:
+            l0, lbd = beregn_omfarOgForankring(phi=phi, sigma_sd=s_, **kw)
+            l0_k[phi].append(nan if l0 is None else l0)
+            lbd_k[phi].append(nan if lbd is None else lbd)
+    return {"sigma_sd": sig, "l0": l0_k, "lbd": lbd_k}

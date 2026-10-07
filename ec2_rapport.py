@@ -1,6 +1,6 @@
 """
 ec2_rapport.py
-Genererer berekningstillegg som PDF per NS-EN 1992-1-1.
+Genererar berekningstillegg som PDF per NS-EN 1992-1-1:2004+A1:2014+NA:2024.
 Krev:  pip install fpdf2
 """
 
@@ -12,9 +12,13 @@ from datetime import date
 import matplotlib
 import numpy as np
 from fpdf import FPDF
+from PIL import Image
 
 import ec2_boye
 import ec2_omfar
+import ec2_material as mat
+
+_STD = "NS-EN 1992-1-1:2004+A1:2014+NA:2024"
 
 _DATO = date.today().strftime("%d.%m.%Y")
 _LM = 20        # left/right margin [mm]
@@ -43,13 +47,18 @@ class _PDF(FPDF):
         self.add_font("Arial",  style="I", fname=_FONT_ITALIC)
 
     def header(self):
+        bredd = self.w - 2 * _LM
+        hogre = f"{_STD}  |  {_DATO}"
+        self.set_font("Arial", "", 8)
+        wh = self.get_string_width(hogre) + 2
         self.set_font("Arial", "B", 9)
-        self.cell(_W / 2, 6, self._tittel,
+        self.cell(bredd - wh, 6, self._tittel,
                   new_x="RIGHT", new_y="TOP", align="L")
-        self.cell(_W / 2, 6, f"NS-EN 1992-1-1  |  {_DATO}",
+        self.set_font("Arial", "", 8)
+        self.cell(wh, 6, hogre,
                   new_x="LMARGIN", new_y="NEXT", align="R")
         self.set_draw_color(80, 80, 80)
-        self.line(_LM, self.get_y(), 210 - _LM, self.get_y())
+        self.line(_LM, self.get_y(), self.w - _LM, self.get_y())
         self.ln(3)
 
     def footer(self):
@@ -104,93 +113,127 @@ def _embed_plot(pdf: _PDF, fig, width_mm: float = _W):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
     buf.seek(0)
-    pdf.image(buf, x=_LM, w=width_mm)
+    with Image.open(buf) as im:
+        px_w, px_h = im.size
+    buf.seek(0)
+    tilgjengeleg_h = pdf.h - pdf.get_y() - 22
+    w = min(width_mm, tilgjengeleg_h * px_w / px_h)
+    pdf.image(buf, x=_LM + (width_mm - w) / 2, w=w)
+
+
+
+def _kv(pdf: _PDF, rader: list, widths: list):
+    """To-kolonnetabell med venstrejustert tekst."""
+    for j, rad in enumerate(rader):
+        pdf.set_font("Arial", "", 9)
+        pdf.set_fill_color(240, 246, 252) if j % 2 == 0 else pdf.set_fill_color(255, 255, 255)
+        for i, (v, w) in enumerate(zip(rad, widths)):
+            last = i == len(rad) - 1
+            pdf.cell(w, 6, str(v), border=1, fill=True, align="L",
+                     new_x="LMARGIN" if last else "RIGHT",
+                     new_y="NEXT" if last else "TOP")
 
 
 # ══════════════════════════════════════════════════════════
 # RAPPORT 1 – Bøyediameter
 # ══════════════════════════════════════════════════════════
 
-def lag_rapport_boye(fcd: float, fig, custom_points=None) -> bytes:
-    """Berekningstillegg for bøyediameter (NS-EN 1992-1-1 §8.3)."""
-    pdf = _PDF("Berekningstillegg – Bøyediameter")
+def lag_rapport_boye(fck, fcd, fck_brukt, avgrensa, situasjon, gamma_c, gamma_s,
+                     ab_modus, ab, sigma_max, fig, custom_points=None) -> bytes:
+    """Berekningstillegg for dordiameter (§8.3 og NA.8.3)."""
+    pdf = _PDF("Berekningstillegg – Dordiameter")
     pdf.add_page()
 
-    # ── Tittel
     pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "Berekningstillegg – Bøyediameter",
+    pdf.cell(0, 10, "Berekningstillegg – Dordiameter ved bøying",
              new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.set_font("Arial", "", 11)
-    pdf.cell(0, 7, "NS-EN 1992-1-1  §8.3(3)  Formel (8.1)",
+    pdf.cell(0, 7, "§8.3(3) uttrykk (8.1) og NA.8.3(2) tabell NA.8.1N.c)",
              new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(6)
 
-    # ── Inndata
-    _seksjon(pdf, "Inndata", gap=0)
-    _txt(pdf, f"Dimensjonerande trykkfasthet:  fcd = {fcd} MPa")
-    _txt(pdf, "Stangdiametrar:  ø12, ø16, ø20, ø25, ø32 mm")
-    _txt(pdf, "Spenningsintervall:  σ = 0 – 435 MPa")
+    _seksjon(pdf, "Inndata og materialparametrar", gap=0)
+    rader = [
+        ("Dimensjonerande situasjon (tabell NA.2.1N)", situasjon),
+        ("Materialfaktor betong γC", f"{gamma_c:.2f}"),
+        ("Materialfaktor armering γS", f"{gamma_s:.2f}"),
+        ("αcc (NA.3.1.6(1)P)", f"{mat.ALPHA_CC}"),
+        ("Betongfasthet fck", f"{fck} MPa"),
+        ("fck brukt i (8.1), maks C55/67 jf. §8.3(3)",
+         f"{fck_brukt} MPa" + ("  (avgrensa)" if avgrensa else "")),
+        ("fcd = αcc · fck / γC",
+         f"{mat.ALPHA_CC} · {fck_brukt} / {gamma_c:.2f} = {fcd:.2f} MPa"),
+        ("Armering", "B500NC etter NS 3576"),
+        ("Spenningsintervall", f"σ = 0 – {sigma_max} MPa"),
+        ("Bestemming av ab", ab_modus),
+    ]
+    _kv(pdf, rader, [85, 85])
 
-    # ── Minstediameter
-    _seksjon(pdf, "Minstediameter – Tabell NA.8.1N.c) i NS-EN 1992-1-1")
-    _th(pdf, ["ø (mm)", "øm,min (mm)"], [30, 30])
-    for i, (phi, mn) in enumerate(zip(ec2_boye.PHI_LIST, ec2_boye.LOW_LIM)):
-        _tr(pdf, [str(phi), str(mn)], [30, 30], fill=(i % 2 == 0))
+    _seksjon(pdf, "ab og minste dordiameter frå tabell NA.8.1N.c)")
+    ws = [30, 30, 45]
+    _th(pdf, ["ø (mm)", "ab (mm)", "øm,min tabell (mm)"], ws)
+    for i, phi in enumerate(ec2_boye.PHI_LIST):
+        _tr(pdf, [str(phi), f"{ab[phi]:.1f}", str(ec2_boye.MIN_BEND[phi])], ws, fill=(i % 2 == 0))
 
-    # ── Formelreferanse
-    _seksjon(pdf, "Formelreferanse – NS-EN 1992-1-1 §8.3(3)")
+    _seksjon(pdf, "Formelgrunnlag")
     for linje in [
-        "Formel (8.1) – kravet for bøyediameter:",
-        "  Fbt · (1/ab + 1/(2·ø)) / fcd  ≤  øm,min / ø",
+        "§8.3(3) uttrykk (8.1):",
+        "   øm,min ≥ Fbt · (1/ab + 1/(2·ø)) / fcd",
+        "der",
+        "   Fbt = π · (ø/2)² · σ   [N]  strekkraft i stanga ved byrjinga av bøyen (ULS)",
+        "   ab  = halve senteravstanden mellom stengene vinkelrett på bøyens plan.",
+        "         For stang mot ytterkant: ab = overdekning + ø/2.",
+        "   fcd = αcc · fck / γC, ikkje høgare enn for C55/67.",
         "",
-        "der bøyediameteren er:",
-        "  øm = Fbt / fcd  ·  1 / (1/ab + 1/(2·ø))",
-        "",
-        "der:",
-        "  Fbt  =  π · (ø/2)² · σ      [N]",
-        "         (strekkkraft i armering ved bøyepunktet)",
-        "  ab   =  senteravstand / 2    [mm]",
-        "  ø    =  stangdiameter        [mm]",
-        "  fcd  =  dim. trykkfasthet    [MPa]",
-        "  σ    =  strekkspenning       [MPa]",
-        "",
-        "ab-verdiar (halve senteravstand):",
-        "  ø12 → ab = 50 mm  |  ø16 → ab = 62,5 mm  |  ø20 → ab = 75 mm",
-        "  ø25 → ab = 87,5 mm  |  ø32 → ab = 100 mm",
+        "NA.8.3(2): Dordiameteren skal ikkje vere mindre enn den største av verdien",
+        "i tabell NA.8.1N og verdien frå uttrykk (8.1):",
+        "   øm,dim = max(øm,min tabell ; øm frå (8.1))",
     ]:
         _txt(pdf, linje, h=5)
 
-    # ── Resultattabell
-    _seksjon(pdf, "Resultat – Bøyediameter øm [mm] ved ulike spenningar")
-    _txt(pdf, "Strek (–) tyder at verdien er under minstediameteren.", h=5)
+    _seksjon(pdf, "Resultat – dimensjonerande dordiameter øm,dim [mm]")
+    _txt(pdf, "Verdi merka * er styrt av tabell NA.8.1N.c). Andre verdiar er styrt av (8.1).", h=5)
     pdf.ln(2)
-
-    data = ec2_boye.berekn_kurvar(fcd)
+    data = ec2_boye.berekn_kurvar(fcd, ab, sigma_max=sigma_max)
     ws = [20, 30, 30, 30, 30, 30]
     _th(pdf, ["σ [MPa]", "ø12", "ø16", "ø20", "ø25", "ø32"], ws)
-    for i, s in enumerate(range(0, 436, 25)):
+    steg = list(range(0, sigma_max + 1, 25))
+    if steg[-1] != sigma_max:
+        steg.append(sigma_max)
+    for i, s in enumerate(steg):
         row = [str(s)]
         for phi in ec2_boye.PHI_LIST:
-            dm = data["d_bend_masked"][phi][s]
-            row.append("–" if np.isnan(dm) else f"{dm:.0f}")
+            d81 = data["d_bend"][phi][s]
+            mn = ec2_boye.MIN_BEND[phi]
+            row.append(f"{mn}*" if d81 < mn else f"{d81:.0f}")
         _tr(pdf, row, ws, fill=(i % 2 == 0))
 
-    # ── Eigendefinerte punkt
     if custom_points:
-        _seksjon(pdf, "Egendefinerte punkt")
-        ws_e = [25, 28, 38, 38, 20]
-        _th(pdf, ["ø (mm)", "σ (MPa)", "øm (mm)", "øm,min (mm)", "OK?"], ws_e)
+        _seksjon(pdf, "Eigendefinerte punkt")
+        ws_e = [22, 25, 30, 30, 33, 30]
+        _th(pdf, ["ø (mm)", "σ (MPa)", "ab (mm)", "(8.1) (mm)", "tabell (mm)", "øm,dim (mm)"], ws_e)
         for i, (phi, sig) in enumerate(custom_points):
-            d, mn = ec2_boye.berekn_boeyediameter(phi, sig, fcd)
-            ok = "Ja" if d >= mn else "NEI"
-            _tr(pdf, [str(phi), f"{sig:.0f}", f"{d:.1f}", str(mn), ok],
-                ws_e, fill=(i % 2 == 0))
+            d, mn = ec2_boye.berekn_boeyediameter(phi, sig, fcd, ab[phi])
+            _tr(pdf, [str(phi), f"{sig:.0f}", f"{ab[phi]:.1f}", f"{d:.1f}", str(mn),
+                      f"{max(d, mn):.0f}"], ws_e, fill=(i % 2 == 0))
 
-    # ── Plott – landskapsside
+        # Fullt utrekna døme for første punkt
+        phi, sig = custom_points[0]
+        d, mn = ec2_boye.berekn_boeyediameter(phi, sig, fcd, ab[phi])
+        Fbt = math.pi * (phi / 2) ** 2 * sig
+        _seksjon(pdf, f"Dømeberekning – ø{phi}, σ = {sig:.0f} MPa")
+        for linje in [
+            f"Fbt = π · ({phi}/2)² · {sig:.0f} = {Fbt:.0f} N = {Fbt/1000:.1f} kN",
+            f"1/ab + 1/(2ø) = 1/{ab[phi]:.1f} + 1/(2·{phi}) = {1/ab[phi] + 1/(2*phi):.5f} mm⁻¹",
+            f"øm ≥ {Fbt:.0f} · {1/ab[phi] + 1/(2*phi):.5f} / {fcd:.2f} = {d:.1f} mm",
+            f"Tabell NA.8.1N.c): øm,min = {mn} mm",
+            f"Dimensjonerande: øm = max({mn} ; {d:.1f}) = {max(d, mn):.1f} mm",
+        ]:
+            _txt(pdf, linje, h=5)
+
     pdf.add_page(orientation="L")
     _seksjon(pdf, "Plott")
-    _embed_plot(pdf, fig, width_mm=257)  # A4 landskap: 297 - 2*20 = 257 mm
-
+    _embed_plot(pdf, fig, width_mm=257)
     return bytes(pdf.output())
 
 
@@ -198,198 +241,196 @@ def lag_rapport_boye(fcd: float, fig, custom_points=None) -> bytes:
 # RAPPORT 2 – Omfaring og forankring
 # ══════════════════════════════════════════════════════════
 
-def lag_rapport_omfar(
-    fck: float, eta_01: float, n: int,
-    c: float, a: float, type_kobling: str,
-    stangplassering: str, rho: float, rho_1: float,
-    sveist_tverrarmering: bool, sigma_s_max: int,
-    fig, custom_points=None,
-) -> bytes:
-    """Berekningstillegg for omfaring og forankring (NS-EN 1992-1-1 §8.4 og §8.7)."""
+def lag_rapport_omfar(felles: dict, situasjon: str, tilstand: str, sigma_s_max: int,
+                      fig, kurvar: dict, custom_points=None) -> bytes:
+    """Berekningstillegg for omfaring og forankring (§8.4, §8.7, §8.9)."""
+    f = felles
+    trykk = f["trykk"]
     pdf = _PDF("Berekningstillegg – Omfaring og forankring")
     pdf.add_page()
 
-    # ── Tittel
     pdf.set_font("Arial", "B", 14)
     pdf.cell(0, 10, "Berekningstillegg – Omfaring og forankring",
              new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.set_font("Arial", "", 11)
-    pdf.cell(0, 7, "NS-EN 1992-1-1  §8.4 (forankring)  og  §8.7 (omfaring)",
+    pdf.cell(0, 7, f"§8.4 forankring, §8.7 omfaring, §8.9 buntar – {tilstand.lower()}",
              new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(6)
 
-    # ── Inndata
     _seksjon(pdf, "Inndata", gap=0)
-    fctm = ec2_omfar.hent_fctm(fck)
-    type_tekst = ec2_omfar.get_type_kobling_tekst(type_kobling)
-    eta_tekst = "Gode tilhøve (η₁ = 1,0)" if eta_01 == 1.0 else "Dårlege tilhøve (η₁ = 0,7)"
+    fyd = mat.fyd(f["gamma_s"])
     inndata = [
-        ("Karakteristisk trykkfasthet", f"fck = {fck} MPa"),
-        ("Middelverdi strekkfasthet (Tabell 3.1)", f"fctm = {fctm:.1f} MPa"),
-        ("Heftforhold", eta_tekst),
-        ("Antal stenger i bunt", f"n = {n}"),
-        ("Overdekning", f"c = {c} mm"),
-        ("Senteravstand mellom stenger", f"a = {a} mm"),
-        ("Koblingstype (figur 8.3 NS-EN 1992-1-1)", f"{type_kobling} – {type_tekst}"),
-        ("Stangplassering (K-faktor)", stangplassering),
-        ("Trykkspenning i tverretning", f"ρ = {rho} MPa"),
-        ("Prosentdel omfarte stenger", f"ρ₁ = {rho_1:.0f} %"),
-        ("Sveist tverrarmering (α₄ = 0,7)", "Ja" if sveist_tverrarmering else "Nei"),
-        ("Maks. armeringsspenning", f"σs,max = {sigma_s_max} MPa"),
+        ("Dimensjonerande situasjon (tabell NA.2.1N)",
+         f"{situasjon}: γC = {f['gamma_c']:.2f}, γS = {f['gamma_s']:.2f}"),
+        ("Spenningstilstand", tilstand),
+        ("Betongfasthet fck", f"{f['fck']} MPa"),
+        ("Heftforhold η1", f"{f['eta_01']}"),
+        ("Antal stenger i bunt n", f"{f['n']}"),
+        ("Senteravstand s", f"{f['s']} mm"),
+        ("Overdekning c / sideoverdekning c1", f"{f['c']} mm / {f['c1']} mm"),
+        ("Koblingstype (figur 8.3)",
+         f"{f['type_kobling']} – {ec2_omfar.get_type_kobling_tekst(f['type_kobling'])}"),
+        ("Prosentdel omfarte stenger ρ1", f"{f['rho_1']:.0f} %"),
+        ("Sveist tverrarmering (α4 = 0.7)", "Ja" if f["sveist_tverrarmering"] else "Nei"),
     ]
-    ws_i = [95, 75]
-    _th(pdf, ["Parameter", "Verdi"], ws_i)
-    for j, (lab, val) in enumerate(inndata):
-        pdf.set_font("Arial", "", 9)
-        fill = j % 2 == 0
-        pdf.set_fill_color(240, 246, 252) if fill else pdf.set_fill_color(255, 255, 255)
-        pdf.cell(ws_i[0], 6, lab,  border=1, fill=True, align="L",
-                 new_x="RIGHT",   new_y="TOP")
-        pdf.cell(ws_i[1], 6, val,  border=1, fill=True, align="L",
-                 new_x="LMARGIN", new_y="NEXT")
+    if not trykk:
+        inndata += [
+            ("Konstruksjonsdel (ΣAst,min forankring)", f["konstruksjon"]),
+            ("Tverrarmering ΣAst", f"{f['sum_ast']:.0f} mm²"),
+            ("Plassering av stang (figur 8.4)",
+             f"{f['stangplassering']}  (K = {ec2_omfar.K_MAP[f['stangplassering']]})"),
+            ("Trykk i tverretning p", f"{f['rho']} MPa"),
+        ]
+    if f["n"] > 1 and not trykk:
+        inndata.append(("Forskyvd forankring i bunt (§8.9.2(2))",
+                        "Ja" if f["forskyvd_forankring"] else "Nei"))
+    inndata.append(("Maks. spenning i plott/tabell", f"σs,max = {sigma_s_max} MPa"))
+    _kv(pdf, inndata, [78, 92])
 
-    # ── Mellomrekningar (referansediameter ø20)
+    # ── Dømeberekning ø20 ved fyd
     ref_phi = 20
-    ref_sig = sigma_s_max
-    fctk005  = 0.7 * fctm
-    fctd     = 0.85 * fctk005 / 1.5
-    eta_02   = 1.0 if ref_phi <= 32 else (132 - ref_phi) / 100
-    fbd      = 2.25 * eta_01 * eta_02 * fctd
-    phi_n    = ref_phi * math.sqrt(n)
-    As       = math.pi / 4 * phi_n ** 2
-    lbrqd    = (phi_n / 4) * (abs(ref_sig) / fbd)
-    cd       = min(a / 2, c) if type_kobling in ("a", "b") else c
-    alpha_1  = 1.0 if type_kobling == "a" else (0.7 if cd > 3 * phi_n else 1.0)
-    a2raw    = (1 - 0.15 * (cd - phi_n) / phi_n) if type_kobling == "a" \
-               else (1 - 0.15 * (cd - 3 * phi_n) / phi_n)
-    alpha_2  = max(0.7, min(1.0, a2raw))
-    k_map    = {"Utenfor": 0, "Innenfor": 0.05, "I bøy": 0.1}
-    k        = k_map.get(stangplassering, 0.05)
-    sum_astmin = As if phi_n >= 20 else 0
-    alpha_3  = max(0.7, min(1.0, 1 - k * (0 - sum_astmin) / As))
-    alpha_5  = max(0.7, min(1.0, 1 - 0.04 * rho))
-    alpha_6  = max(1.0, min(1.5, (rho_1 / 25) ** 0.5))
-    alpha_235 = max(0.7, alpha_2 * alpha_3 * alpha_5)
-    l0min    = max(0.3 * lbrqd * alpha_6, 15 * phi_n, 200)
-    l0       = max(lbrqd * alpha_1 * alpha_2 * alpha_3 * alpha_5 * alpha_6, l0min)
-    lbdmin   = max(0.3 * lbrqd, 10 * phi_n, 100)
-    alpha_4  = 0.7
-    lbd      = max(lbrqd * alpha_1 * alpha_235 * alpha_4, lbdmin) \
-               if sveist_tverrarmering else max(lbrqd * alpha_1 * alpha_235, lbdmin)
+    ref_sig = round(fyd)
+    d = ec2_omfar.beregn_detaljar(phi=ref_phi, sigma_sd=ref_sig, **f)
+    fa, fo = d["forank"], d["omfar"]
 
-    _seksjon(pdf, f"Mellomrekningar – ø{ref_phi} mm, σsd = {ref_sig} MPa")
-    ws_m = [100, 70]
-    _th(pdf, ["Uttrykk", "Verdi"], ws_m)
-    mellom = [
-        ("fctk,0.05 = 0,7 · fctm",
-         f"= 0,7 · {fctm:.2f} = {fctk005:.3f} MPa"),
-        ("fctd = 0,85 · fctk,0.05 / 1,5",
-         f"= {fctd:.4f} MPa"),
-        (f"η₂ = 1,0  (ø{ref_phi} ≤ 32 mm)",
-         f"= {eta_02:.2f}"),
-        ("fbd = 2,25 · η₁ · η₂ · fctd",
-         f"= {fbd:.4f} MPa"),
-        (f"øn = ø · √n = {ref_phi} · √{n}",
-         f"= {phi_n:.2f} mm"),
-        ("lb,rqd = (øn/4) · (σsd / fbd)",
-         f"= {lbrqd:.1f} mm"),
-        (f"cd = min(a/2 ; c) = min({a/2:.0f} ; {c})",
-         f"= {cd:.1f} mm"),
-        (f"α₁  (type {type_kobling})",
-         f"= {alpha_1:.2f}"),
-        ("α₂  (inneslutning)",
-         f"= {alpha_2:.3f}"),
-        ("α₃  (tverrarmering)",
-         f"= {alpha_3:.3f}"),
-        ("α₅  (trykkspenning tverretning)",
-         f"= {alpha_5:.3f}"),
-        ("α₆  (omfaringsprosent)",
-         f"= {alpha_6:.3f}"),
-    ]
-    for j, (expr, res) in enumerate(mellom):
-        pdf.set_font("Arial", "", 9)
-        fill = j % 2 == 0
-        pdf.set_fill_color(240, 246, 252) if fill else pdf.set_fill_color(255, 255, 255)
-        pdf.cell(ws_m[0], 6, expr, border=1, fill=True, align="L",
-                 new_x="RIGHT",   new_y="TOP")
-        pdf.cell(ws_m[1], 6, res,  border=1, fill=True, align="L",
-                 new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
-    _txt(pdf, "Sjå resultattabellar nedanfor for l0 og lbd for alle stangdiametrar og spenningar.", h=5, style="I")
-
-    # ── Formelreferansar – side 2
     pdf.add_page()
-    _seksjon(pdf, "Formelreferansar – NS-EN 1992-1-1", gap=0)
+    _seksjon(pdf, f"Dømeberekning – ø{ref_phi} mm, σsd = {ref_sig} MPa", gap=0)
+    w2 = [95, 75]
+    _th(pdf, ["Uttrykk", "Verdi"], w2)
+    rader = [
+        ("fck brukt for heft (maks C60/75, §8.4.2(2))", f"{d['fck_heft']} MPa"),
+        ("fctm (tabell 3.1)", f"{d['fctm']:.2f} MPa"),
+        ("fctk,0.05 = 0.7 · fctm", f"0.7 · {d['fctm']:.2f} = {d['fctk005']:.3f} MPa"),
+        ("fctd = αct · fctk,0.05 / γC",
+         f"{mat.ALPHA_CT} · {d['fctk005']:.3f} / {d['gamma_c']:.2f} = {d['fctd']:.3f} MPa"),
+        ("φn = φ · √n", f"{ref_phi} · √{d['n']} = {d['phi_n']:.2f} mm"),
+        ("a = s − " + ("φ" if d["n"] == 1 else "2φ"), f"{d['a']:.1f} mm"),
+        ("cd (figur 8.3)", f"{d['cd']:.1f} mm"),
+    ]
+    _kv(pdf, rader, w2)
+
+    def _blokk(tittel, x, er_omf):
+        _seksjon(pdf, tittel)
+        _th(pdf, ["Uttrykk", "Verdi"], w2)
+        r = [
+            ("Diameter brukt", f"{x['phi_x']:.2f} mm"),
+            ("η2 (1.0 for ø ≤ 32, elles (132−ø)/100)", f"{x['eta_2']:.3f}"),
+            ("fbd = 2.25 · η1 · η2 · fctd",
+             f"2.25 · {f['eta_01']} · {x['eta_2']:.3f} · {d['fctd']:.3f} = {x['fbd']:.3f} MPa"),
+            ("lb,rqd = (ø/4) · (σsd / fbd)",
+             f"({x['phi_x']:.1f}/4) · ({ref_sig}/{x['fbd']:.3f}) = {x['lbrqd']:.1f} mm"),
+            ("α1", f"{x['a1']:.3f}"),
+            ("α2" + ("" if trykk else f"  (urekna {x['a2_raw']:.3f})"), f"{x['a2']:.3f}"),
+            ("As = π/4 · ø²", f"{x['As']:.1f} mm²"),
+            ("ΣAst,min" + ("  = As·σsd/fyd (§8.7.3)" if er_omf else ""), f"{x['sum_ast_min']:.1f} mm²"),
+            ("α3 = 1 − K·(ΣAst − ΣAst,min)/As", f"{x['a3']:.3f}"),
+        ]
+        if not er_omf:
+            r.append(("α4", f"{x['a4']:.2f}"))
+        r.append(("α5", f"{x['a5']:.3f}"))
+        if er_omf:
+            r.append(("α6 = (ρ1/25)^0.5", f"{x['a6']:.3f}"))
+        _kv(pdf, r, w2)
+
+    _blokk("Forankring §8.4", fa, er_omf=False)
+    if d["lbd"] is not None:
+        lbmin_txt = "max(0.6·lb,rqd ; 10ø ; 100)  (8.7)" if trykk else "max(0.3·lb,rqd ; 10ø ; 100)  (8.6)"
+        _kv(pdf, [
+            ("α2·α3·α5 ≥ 0.7  (8.5)", f"{d['a235']:.3f}"),
+            ("α1·α2α3α5·α4·lb,rqd", f"{d['lbd_raw']:.1f} mm"),
+            ("lb,min = " + lbmin_txt, f"{d['lbmin']:.1f} mm"),
+            ("lbd = max(…)", f"{d['lbd']:.0f} mm"),
+        ], w2)
+    else:
+        _txt(pdf, "Forankring ikkje tillaten for denne kombinasjonen.", h=5, style="I")
+
+    if fo is not None:
+        _blokk("Omfaring §8.7.3", fo, er_omf=True)
+        rows = [
+            ("α1·α2·α3·α5·α6·lb,rqd  (8.10)", f"{d['l0_raw']:.1f} mm"),
+            ("l0,min = max(0.3·α6·lb,rqd ; 15ø ; 200)  (8.11)", f"{d['l0min']:.1f} mm"),
+            ("l0 = max(…)", f"{d['l0']:.1f} mm"),
+            ("l0 avrunda opp til næraste 100 mm", f"{d['l0_rund']} mm"),
+        ]
+        if d["omfar_forskyving"]:
+            rows.append(("Forskyving enkeltstenger ≥ 1.3·l0 (§8.9.3(3))", f"{d['forskyving']:.0f} mm"))
+        _kv(pdf, rows, w2)
+    else:
+        _txt(pdf, "Omfaring ikkje tillaten for denne kombinasjonen (§8.9.3(3)).", h=5, style="I")
+
+    if d["merknader"]:
+        _seksjon(pdf, "Merknader")
+        for m in d["merknader"]:
+            _txt(pdf, "• " + m, h=5)
+
+    # ── Formelgrunnlag
+    pdf.add_page()
+    _seksjon(pdf, "Formelgrunnlag", gap=0)
     for linje in [
-        "§8.4.2  Formel (8.2) – Dimensjonerande heftfasthet:",
-        "   fbd = 2,25 · η₁ · η₂ · fctd",
-        "   der: η₁ = heftforhold (1,0 / 0,7),  η₂ = stangfaktor,",
-        "        fctd = 0,85 · 0,7 · fctm / 1,5",
+        "§8.4.2 (8.2): fbd = 2.25 · η1 · η2 · fctd,  fctd = αct · fctk,0.05 / γC  (αct = 0.85, NA.3.1.6(2)P)",
+        "   fctk,0.05 avgrensa til verdien for C60/75.",
+        "§8.4.3 (8.3): lb,rqd = (ø/4) · (σsd / fbd)",
+        "§8.4.4 (8.4): lbd = α1 · α2 · α3 · α4 · α5 · lb,rqd ≥ lb,min,   (8.5): α2·α3·α5 ≥ 0.7",
+        "   (8.6) strekk: lb,min = max(0.3·lb,rqd ; 10ø ; 100 mm)",
+        "   (8.7) trykk:  lb,min = max(0.6·lb,rqd ; 10ø ; 100 mm)",
+        "§8.7.3 (8.10): l0 = α1 · α2 · α3 · α5 · α6 · lb,rqd ≥ l0,min",
+        "§8.7.3 (8.11): l0,min = max(0.3·α6·lb,rqd ; 15ø ; 200 mm)",
         "",
-        "§8.4.3  Formel (8.3) – Grunnleggjande forankringslengde:",
-        "   lb,rqd = (øn / 4) · (σsd / fbd)   [mm]",
-        "   der:  øn = ø · √n  (ekvivalent diameter for bunt)",
+        "Tabell 8.2 (strekk):",
+        "   α1: rett = 1.0 ; ikkje rett = 0.7 viss cd > 3ø, elles 1.0",
+        "   α2: rett 1 − 0.15(cd − ø)/ø ; ikkje rett 1 − 0.15(cd − 3ø)/ø ; 0.7 ≤ α2 ≤ 1.0",
+        "   α3 = 1 − K·λ,  λ = (ΣAst − ΣAst,min)/As ; 0.7 ≤ α3 ≤ 1.0",
+        "        ΣAst,min = 0.25·As (bjelkar) / 0 (plater) ; for omfaring As·σsd/fyd",
+        "        K = 0.1 (i bøyen) / 0.05 (innanfor) / 0 (utanfor), figur 8.4",
+        "   α4 = 0.7 ved sveist tverrarmering ;  α5 = 1 − 0.04p, 0.7 ≤ α5 ≤ 1.0",
+        "   α6 = (ρ1/25)^0.5, 1.0 ≤ α6 ≤ 1.5 (tabell 8.3)",
+        "Tabell 8.2 (trykk): α1 = α2 = α3 = 1.0 ; α4 = 0.7 ; α5 ikkje aktuell",
         "",
-        "§8.4.4  Formel (8.4) – Dimensjonerande forankringslengde:",
-        "   lbd = α₁ · α₂ · α₃ · α₄ · α₅ · lb,rqd  ≥  lb,min",
-        "   lb,min (strekk) = max(0,3·lb,rqd ; 10·øn ; 100 mm)",
-        "   lb,min (trykk)  = max(0,6·lb,rqd ; 10·øn ; 100 mm)",
+        "Figur 8.3: a) cd = min(a/2 ; c1 ; c)   b) cd = min(a/2 ; c1)   c) cd = c",
+        "   a = fri avstand mellom stengene = s − ø (bunt: s − 2ø, konservativt).",
         "",
-        "§8.7.3  Formel (8.10) – Omfaringslengde:",
-        "   l0 = α₁ · α₂ · α₃ · α₅ · α₆ · lb,rqd  ≥  l0,min",
-        "",
-        "§8.7.3  Formel (8.11) – Minste omfaringslengde:",
-        "   l0,min = max(0,3 · α₆ · lb,rqd ; 15 · øn ; 200 mm)",
-        "",
-        "Alfakoeffisientar – Tabell 8.2 NS-EN 1992-1-1:",
-        "   α₁ : koblingstype  (a = 1,0 ;  b/c = 0,7 viss cd > 3·øn, elles 1,0)",
-        "   α₂ : inneslutning  (1 − 0,15·(cd − øn)/øn  for type a ;",
-        "                       1 − 0,15·(cd − 3·øn)/øn  for type b/c,  gr. 0,7–1,0)",
-        "   α₃ : tverrarmering  (1 − k·(Ast − Ast,min)/As,  gr. 0,7–1,0)",
-        "         K = 0 (utanfor bøy)  /  0,05 (innanfor)  /  0,1 (i bøy)",
-        "   α₄ : 0,7 ved sveist tverrarmering",
-        "   α₅ : trykkspenning  (1 − 0,04·ρ,  gr. 0,7–1,0)",
-        "   α₆ : omfaringsprosent  ((ρ₁/25)^0,5,  gr. 1,0–1,5)",
+        "§8.9 Buntar: øn = ø·√nb ≤ 55 mm. nb ≤ 4 for vertikale stenger i trykk og",
+        "   i omfaringsskøyt, elles nb ≤ 3.",
+        "   §8.9.2(2): forankring med enkeltstenger forskyvd > 1.3·lb,rqd → ø, elles øn.",
+        "   §8.9.3(2): 2 stenger, øn < 32 mm: omfaring utan forskyving, l0 med øn.",
+        "   §8.9.3(3): 2 stenger med øn ≥ 32 mm eller 3 stenger: enkeltstenger forskyvast",
+        "   ≥ 1.3·l0 med l0 rekna for éi stang. Maks fire stenger i eitt snitt.",
     ]:
         _txt(pdf, linje, h=5)
 
     # ── Resultattabellar
-    kurvar = ec2_omfar.berekn_kurvar(
-        fck, eta_01, n, c, a, type_kobling, 0,
-        stangplassering, rho, rho_1, sveist_tverrarmering, sigma_s_max,
-    )
     ws_r = [20, 30, 30, 30, 30, 30]
     cols_r = ["σ [MPa]", "ø12", "ø16", "ø20", "ø25", "ø32"]
-    sig_steg = list(range(0, sigma_s_max + 1, 25))
+    steg = list(range(0, sigma_s_max + 1, 25))
 
-    _seksjon(pdf, "Resultat – Omfaringslengde l0 [mm]  (avrunda til næraste 100 mm)")
+    def _v(x, fmt):
+        return "–" if x != x else fmt.format(x)   # NaN → «–»
+
+    _seksjon(pdf, "Resultat – omfaringslengde l0 [mm] (avrunda opp til 100 mm)")
+    if f["n"] > 1:
+        _txt(pdf, "Bunt: sjå §8.9.3 for kva diameter som er brukt og krav til forskyving.", h=5, style="I")
     _th(pdf, cols_r, ws_r)
-    for i, s in enumerate(sig_steg):
-        row = [str(s)] + [str(kurvar["l0"][phi][s]) for phi in ec2_omfar.PHI_LIST]
-        _tr(pdf, row, ws_r, fill=(i % 2 == 0))
+    for i, s in enumerate(steg):
+        _tr(pdf, [str(s)] + [_v(kurvar["l0"][p][s], "{:.0f}") for p in ec2_omfar.PHI_LIST],
+            ws_r, fill=(i % 2 == 0))
 
-    _seksjon(pdf, "Resultat – Forankringslengde lbd [mm]")
+    _seksjon(pdf, "Resultat – forankringslengde lbd [mm]")
     _th(pdf, cols_r, ws_r)
-    for i, s in enumerate(sig_steg):
-        row = [str(s)] + [f"{kurvar['lbd'][phi][s]:.0f}" for phi in ec2_omfar.PHI_LIST]
-        _tr(pdf, row, ws_r, fill=(i % 2 == 0))
+    for i, s in enumerate(steg):
+        _tr(pdf, [str(s)] + [_v(kurvar["lbd"][p][s], "{:.0f}") for p in ec2_omfar.PHI_LIST],
+            ws_r, fill=(i % 2 == 0))
+    _txt(pdf, "«–» = ikkje tillaten kombinasjon (sjå merknader).", h=5, style="I")
 
-    # ── Eigendefinerte punkt
     if custom_points:
-        _seksjon(pdf, "Egendefinerte punkt")
+        _seksjon(pdf, "Eigendefinerte punkt")
         ws_e = [25, 30, 40, 40]
         _th(pdf, ["ø (mm)", "σ (MPa)", "l0 (mm)", "lbd (mm)"], ws_e)
         for i, (phi, sig) in enumerate(custom_points):
-            l0c, lbdc = ec2_omfar.beregn_omfarOgForankring(
-                fck, eta_01, phi, n, sig, c, a,
-                type_kobling, 0, stangplassering, rho, rho_1, sveist_tverrarmering,
-            )
-            _tr(pdf, [str(phi), f"{sig:.0f}", str(l0c), f"{lbdc:.0f}"],
-                ws_e, fill=(i % 2 == 0))
+            l0c, lbdc = ec2_omfar.beregn_omfarOgForankring(phi=phi, sigma_sd=sig, **f)
+            _tr(pdf, [str(phi), f"{sig:.0f}", "–" if l0c is None else str(l0c),
+                      "–" if lbdc is None else f"{lbdc:.0f}"], ws_e, fill=(i % 2 == 0))
 
-    # ── Plott – landskapsside
     pdf.add_page(orientation="L")
     _seksjon(pdf, "Plott")
-    _embed_plot(pdf, fig, width_mm=257)  # A4 landskap: 297 - 2*20 = 257 mm
-
+    _embed_plot(pdf, fig, width_mm=257)
     return bytes(pdf.output())

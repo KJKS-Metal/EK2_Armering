@@ -1,0 +1,6 @@
+# Gamle frittståande skript
+_old_base/
+
+# Python
+__pycache__/
+*.pyc
