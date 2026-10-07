@@ -9,6 +9,7 @@ Køyr med:  streamlit run app.py
 import io
 import numpy as np
 import matplotlib
+import mpl_trygg  # noqa: F401  – gjer mathtext trådsikker (sjå fila)
 import matplotlib.pyplot as plt
 import streamlit as st
 
